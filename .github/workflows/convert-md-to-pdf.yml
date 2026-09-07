@@ -1,0 +1,52 @@
+name: Convert Markdown to PDF
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'Elysium_Fourth_Edition_Full_Expanded.md'
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended
+
+      - name: Convert Markdown to PDF
+        run: |
+          pandoc Elysium_Fourth_Edition_Full_Expanded.md \
+            -o Elysium_Fourth_Edition_Full_Expanded.pdf \
+            --pdf-engine=xelatex \
+            -V geometry:margin=1in \
+            -V fontsize=11pt \
+            --toc \
+            --toc-depth=3
+
+      - name: Update README with PDF link
+        run: |
+          DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+          echo "## 📄 Latest Generated PDF" > README.md
+          echo "" >> README.md
+          echo "[Download Elysium_Fourth_Edition_Full_Expanded.pdf](Elysium_Fourth_Edition_Full_Expanded.pdf)" >> README.md
+          echo "" >> README.md
+          echo "*Last generated: $DATE*" >> README.md
+          echo "" >> README.md
+          echo "> This PDF is automatically generated from the Markdown source." >> README.md
+
+      - name: Commit PDF and README
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Elysium_Fourth_Edition_Full_Expanded.pdf README.md
+          git commit -m "chore: update generated PDF and README [skip ci]" || echo "No changes to commit"
+          git push
