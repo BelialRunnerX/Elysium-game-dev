@@ -1,0 +1,30 @@
+name: headless
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  headless-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ ripgrep
+
+      - name: Configure (client OFF, tests ON)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DELYSIUM_BUILD_CLIENT=OFF \
+            -DELYSIUM_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
