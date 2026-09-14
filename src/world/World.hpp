@@ -2,6 +2,7 @@
 
 #include "core/Math.hpp"
 #include "world/Block.hpp"
+#include "world/ChunkOccupancy.hpp"
 #include "world/MicroBrick.hpp"
 #include "world/PlanetEnvironment.hpp"
 #include "world/PlanetTypes.hpp"
@@ -111,6 +112,12 @@ public:
     std::uint64_t revision() const { return revision_; }
     std::uint64_t chunkRevision(int chunkX, int chunkY, int chunkZ) const;
     int dirtyChunkCountSince(std::uint64_t revision) const;
+    const ChunkAdaptiveSummary& chunkOccupancy(int chunkX, int chunkY, int chunkZ) const;
+    // Rebuild one chunk's occupied extents + adaptive kind from dense blocks.
+    void rebuildChunkOccupancy(int chunkX, int chunkY, int chunkZ);
+    // Bulk-fill one chunk then rebuild occupancy / exterior once (avoids O(n²)
+    // per-cell boundary rescans + connectivity refresh when clearing terrain).
+    void fillChunk(int chunkX, int chunkY, int chunkZ, BlockType type);
 
 private:
     std::uint64_t seed_{};
@@ -121,6 +128,7 @@ private:
     std::unordered_map<int, MicroBrick> microBricks_;
     std::vector<std::uint8_t> exteriorAirCache_;
     std::array<std::uint64_t, ChunkCount> chunkRevisions_{};
+    std::array<ChunkAdaptiveSummary, ChunkCount> chunkOccupancy_{};
     std::uint64_t revision_{1};
 
     void generate();
@@ -131,6 +139,8 @@ private:
     void beginEdit();
     void markChunkDirty(int chunkX, int chunkY, int chunkZ);
     void markCellAndSeamNeighborsDirty(int x, int y, int z);
+    void noteCellOccupancyEdit(int x, int y, int z, bool wasSolid, bool nowSolid, BlockType nowType);
+    void rebuildAllChunkOccupancy();
     std::vector<std::uint8_t> computeExteriorAirMask() const;
     void refreshExteriorConnectivityAndDirty();
 };
