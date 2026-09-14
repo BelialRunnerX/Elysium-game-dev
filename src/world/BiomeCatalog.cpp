@@ -109,7 +109,7 @@ constexpr BiomeDef kBiomes[]{
     {BiomeId::BarrenImpactBasin, "Impact Basin", PlanetClass::Barren,
      tagsOf(kTagBasin), BlockType::Regolith, BlockType::Stone},
     {BiomeId::BarrenDustSea, "Dust Sea", PlanetClass::Barren,
-     tagsOf(kTagDust), BlockType::Regolith, BlockType::Stone},
+     tagsOf(kTagDust), BlockType::Regolith, BlockType::Regolith},
     {BiomeId::BarrenSaltFlat, "Salt Flat", PlanetClass::Barren,
      tagsOf(kTagSalt), BlockType::Regolith, BlockType::Stone},
     {BiomeId::BarrenFractureMaze, "Fracture Maze", PlanetClass::Barren,
@@ -216,6 +216,7 @@ std::span<const BiomeDef> allBiomes() {
 }
 
 std::span<const BiomeDef> biomesFor(PlanetClass planetClass) {
+    // Contiguous ranges match enum order in kBiomes.
     switch (planetClass) {
         case PlanetClass::Temperate: return {kBiomes + 0, 12};
         case PlanetClass::Barren: return {kBiomes + 12, 8};
