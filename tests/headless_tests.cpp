@@ -25,6 +25,7 @@
 #include "world/SurfaceChunkPersistence.hpp"
 #include "world/SurfaceWorldRead.hpp"
 #include "world/VoxelMesher.hpp"
+#include "world/FaceCullBitmasks.hpp"
 #include "world/World.hpp"
 #include "render/GraphicsBackend.hpp"
 #include "render/WorldRenderer.hpp"
@@ -3519,6 +3520,231 @@ void testSphericalMeshWorkerDeterminismAfterGreedy() {
             "spherical greedy meshing changed across 0/1/2/4/8 worker counts");
 }
 
+bool scalarPlanarMacroCandidate(const WorldSnapshot& world, int x, int y, int z,
+                                int nx, int ny, int nz) {
+    if (!world.inBounds(x, y, z) || world.isRefined(x, y, z)) return false;
+    if (!blockProperties(world.get(x, y, z)).solid) return false;
+    const int qx = x + nx, qy = y + ny, qz = z + nz;
+    if (!world.inBounds(qx, qy, qz)) return true;
+    if (world.isRefined(qx, qy, qz)) return false;
+    if (blockProperties(world.get(qx, qy, qz)).solid) return false;
+    return world.isExteriorAir(qx, qy, qz);
+}
+
+bool scalarSnapshotMacroCandidate(const PlanetSurfaceSnapshot& planet, SurfaceCellAddress a,
+                                  int du, int dv, int dr) {
+    if (planet.hasMicroDetail(a) || !blockProperties(planet.get(a)).solid) return false;
+    SurfaceCellAddress n{a.face, a.u + du, a.v + dv, a.radial + dr};
+    if (n.radial >= 0 && n.radial < PlanetSurfaceSnapshot::RadialLayers) n = planet.normalize(n);
+    if (planet.radialInBounds(n.radial) && planet.hasMicroDetail(n)) return false;
+    return !blockProperties(planet.get(n)).solid;
+}
+
+bool scalarCachedMacroCandidate(const SurfaceChunkData& chunk, int lu, int lv, int lr,
+                                int du, int dv, int dr) {
+    const auto a = chunk.worldAddress(lu, lv, lr);
+    if (chunk.hasMicroDetail(a) || !blockProperties(chunk.getLocal(lu, lv, lr)).solid) return false;
+    const auto neighbor = chunk.worldAddress(lu + du, lv + dv, lr + dr);
+    if (chunk.hasMicroDetail(neighbor)) return false;
+    return !blockProperties(chunk.getWithHalo(lu + du, lv + dv, lr + dr)).solid;
+}
+
+void requirePlanarColumnAgrees(const WorldSnapshot& world, int axis, int a, int b,
+                               int origin, int count, int core0, int core1) {
+    FaceCullWord solid = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0;
+        const int p = origin + i;
+        if (axis == 0) { x = p; y = a; z = b; }
+        else if (axis == 1) { x = a; y = p; z = b; }
+        else { x = a; y = b; z = p; }
+        return world.inBounds(x, y, z) && blockProperties(world.get(x, y, z)).solid;
+    });
+    FaceCullWord refined = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0;
+        const int p = origin + i;
+        if (axis == 0) { x = p; y = a; z = b; }
+        else if (axis == 1) { x = a; y = p; z = b; }
+        else { x = a; y = b; z = p; }
+        return world.inBounds(x, y, z) && world.isRefined(x, y, z);
+    });
+    FaceCullWord emitNeighbor = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0;
+        const int p = origin + i;
+        if (axis == 0) { x = p; y = a; z = b; }
+        else if (axis == 1) { x = a; y = p; z = b; }
+        else { x = a; y = b; z = p; }
+        return !world.inBounds(x, y, z) || world.isExteriorAir(x, y, z);
+    });
+    const FaceCullWord pos = cullPlanarPos(solid, refined, emitNeighbor);
+    const FaceCullWord neg = cullPlanarNeg(solid, refined, emitNeighbor);
+    for (int c = core0; c < core1; ++c) {
+        const int bit = c - origin;
+        int x=0,y=0,z=0;
+        if (axis == 0) { x = c; y = a; z = b; }
+        else if (axis == 1) { x = a; y = c; z = b; }
+        else { x = a; y = b; z = c; }
+        const int dpos[3] = {axis==0?1:0, axis==1?1:0, axis==2?1:0};
+        const int dneg[3] = {axis==0?-1:0, axis==1?-1:0, axis==2?-1:0};
+        require(faceCullTest(pos, bit) == scalarPlanarMacroCandidate(world, x, y, z, dpos[0], dpos[1], dpos[2]),
+                "planar bitmask + cull disagreed with scalar solid-solid candidate");
+        require(faceCullTest(neg, bit) == scalarPlanarMacroCandidate(world, x, y, z, dneg[0], dneg[1], dneg[2]),
+                "planar bitmask - cull disagreed with scalar solid-solid candidate");
+    }
+}
+
+void testBitmaskFaceCullAgreesWithSolidSolid() {
+    // Synthetic words: isolated bits, runs, checkerboard.
+    const FaceCullWord isolated = faceCullBit(3) | faceCullBit(8) | faceCullBit(40);
+    const FaceCullWord run = (FaceCullWord{0xF} << 10) | (FaceCullWord{1} << 20);
+    FaceCullWord checker = 0;
+    for (int i = 0; i < 48; i += 2) checker |= faceCullBit(i);
+    for (FaceCullWord solid : {isolated, run, checker, FaceCullWord{~FaceCullWord{0}}}) {
+        for (int i = 1; i < 63; ++i) {
+            require(faceCullTest(cullSolidSolidPos(solid), i)
+                        == scalarSolidSolidExposed(faceCullTest(solid, i), faceCullTest(solid, i + 1)),
+                    "bitmask +axis solid-solid cull drifted from scalar oracle");
+            require(faceCullTest(cullSolidSolidNeg(solid), i)
+                        == scalarSolidSolidExposed(faceCullTest(solid, i), faceCullTest(solid, i - 1)),
+                    "bitmask -axis solid-solid cull drifted from scalar oracle");
+        }
+        const FaceCullWord refined = solid << 1;
+        for (int i = 1; i < 63; ++i) {
+            require(faceCullTest(cullMacroPos(solid, refined), i)
+                        == scalarMacroExposed(faceCullTest(solid, i), faceCullTest(refined, i),
+                                              faceCullTest(solid, i + 1), faceCullTest(refined, i + 1)),
+                    "bitmask macro + cull drifted from scalar oracle");
+            require(faceCullTest(cullMacroNeg(solid, refined), i)
+                        == scalarMacroExposed(faceCullTest(solid, i), faceCullTest(refined, i),
+                                              faceCullTest(solid, i - 1), faceCullTest(refined, i - 1)),
+                    "bitmask macro - cull drifted from scalar oracle");
+        }
+    }
+
+    // Planar fixtures: 2x2x2 cube, sealed cavity, world-edge column, refined neighbor.
+    {
+        WorldSnapshot cube = emptySnapshot();
+        auto put = [&](int x, int y, int z, BlockType t) {
+            cube.blocks[static_cast<std::size_t>(cube.flatIndex(x, y, z))] = t;
+        };
+        for (int y = 2; y < 4; ++y) for (int z = 2; z < 4; ++z) for (int x = 2; x < 4; ++x)
+            put(x, y, z, BlockType::Stone);
+        for (int y = 0; y < 4; ++y) put(0, y, 5, BlockType::Stone); // world -X edge
+        cube.computeExteriorAir();
+        for (int y = 2; y < 4; ++y) for (int z = 2; z < 4; ++z)
+            requirePlanarColumnAgrees(cube, 0, y, z, 0 - kFaceCullHalo, 32 + kFaceCullHalo * 2, 0, 32);
+        for (int z = 2; z < 4; ++z) for (int x = 0; x < 4; ++x)
+            requirePlanarColumnAgrees(cube, 1, x, z, 0 - kFaceCullHalo, 32 + kFaceCullHalo * 2, 0, 32);
+        for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x)
+            requirePlanarColumnAgrees(cube, 2, x, y, 0 - kFaceCullHalo, 32 + kFaceCullHalo * 2, 0, 32);
+
+        WorldSnapshot cavity = emptySnapshot();
+        auto put2 = [&](int x, int y, int z, BlockType t) {
+            cavity.blocks[static_cast<std::size_t>(cavity.flatIndex(x, y, z))] = t;
+        };
+        for (int y = 5; y < 8; ++y) for (int z = 5; z < 8; ++z) for (int x = 5; x < 8; ++x)
+            put2(x, y, z, BlockType::Stone);
+        put2(6, 6, 6, BlockType::Air);
+        cavity.computeExteriorAir();
+        requirePlanarColumnAgrees(cavity, 0, 6, 6, -kFaceCullHalo, 34, 0, 32);
+
+        WorldSnapshot refined = emptySnapshot();
+        refined.blocks[static_cast<std::size_t>(refined.flatIndex(4, 4, 4))] = BlockType::Stone;
+        refined.blocks[static_cast<std::size_t>(refined.flatIndex(5, 4, 4))] = BlockType::Stone;
+        MicroBrick brick(BlockType::Stone);
+        brick.set(0, 0, 0, BlockType::Air);
+        refined.microBricks.emplace(refined.flatIndex(5, 4, 4), brick);
+        refined.computeExteriorAir();
+        requirePlanarColumnAgrees(refined, 0, 4, 4, -kFaceCullHalo, 34, 0, 32);
+
+        const CpuMeshData cavityMesh = buildChunkMesh(cavity, 0, 0, 0);
+        require(cavityMesh.macroQuads == 6, "bitmask planar cull emitted sealed-cavity faces");
+    }
+
+    // Spherical: 4x4x4 prism + cached halo packet vs prior scalar candidate.
+    {
+        PlanetSurface planet(0xB17A5C01ULL, PlanetClass::Barren);
+        const CubeFace face = CubeFace::PositiveZ;
+        const int u0 = 8, v0 = 8;
+        const int base = std::max({planet.surfaceRadial(face, u0, v0),
+                                   planet.surfaceRadial(face, u0 + 3, v0),
+                                   planet.surfaceRadial(face, u0, v0 + 3),
+                                   planet.surfaceRadial(face, u0 + 3, v0 + 3)}) + 3;
+        require(base + 3 < PlanetSurface::RadialLayers, "bitmask spherical fixture escaped radial bounds");
+        for (int r = base; r < base + 4; ++r)
+            for (int v = v0; v < v0 + 4; ++v)
+                for (int u = u0; u < u0 + 4; ++u)
+                    planet.set({face, u, v, r}, BlockType::Stone, true);
+
+        const PlanetChunkAddress addr{face, u0 / PlanetSurface::ChunkSize, v0 / PlanetSurface::ChunkSize, 0};
+        const auto snap = planet.snapshot();
+        JobSystem jobs(SerialJobs);
+        SurfaceChunkCache cache(jobs, 4, 8U * 1024U * 1024U, 4);
+        cache.beginFrame();
+        require(cache.request(planet, addr, SurfaceChunkPriority::EditRemesh), "bitmask cache request failed");
+        settleSurfaceCache(cache, planet);
+        const auto data = cache.find(addr);
+        require(data != nullptr, "bitmask spherical chunk missing");
+
+        const int cu0 = addr.u * PlanetSurface::ChunkSize;
+        const int cv0 = addr.v * PlanetSurface::ChunkSize;
+        constexpr int S = PlanetSurface::ChunkSize;
+
+        for (int lv = 0; lv < S; ++lv) for (int lu = 0; lu < S; ++lu) {
+            const FaceCullColumn rCol = [&] {
+                FaceCullColumn col{};
+                col.solid = packPredBits(S + 2, [&](int i) {
+                    return blockProperties(data->getWithHalo(lu, lv, i - 1)).solid;
+                });
+                col.refined = packPredBits(S + 2, [&](int i) {
+                    return data->hasMicroDetail(data->worldAddress(lu, lv, i - 1));
+                });
+                return col;
+            }();
+            const FaceCullWord rPos = cullMacroPos(rCol.solid, rCol.refined);
+            const FaceCullWord rNeg = cullMacroNeg(rCol.solid, rCol.refined);
+            for (int lr = 0; lr < S; ++lr) {
+                const int bit = faceCullBitIndex(lr);
+                require(faceCullTest(rPos, bit) == scalarCachedMacroCandidate(*data, lu, lv, lr, 0, 0, 1),
+                        "cached bitmask R+ disagreed with scalar halo cull");
+                require(faceCullTest(rNeg, bit) == scalarCachedMacroCandidate(*data, lu, lv, lr, 0, 0, -1),
+                        "cached bitmask R- disagreed with scalar halo cull");
+
+                const SurfaceCellAddress a{face, cu0 + lu, cv0 + lv, lr};
+                require(scalarSnapshotMacroCandidate(snap, a, 0, 0, 1)
+                            == scalarCachedMacroCandidate(*data, lu, lv, lr, 0, 0, 1),
+                        "snapshot vs cached scalar R+ halo contract drifted");
+            }
+        }
+
+        // Sample U/V axes on the prism cells (includes interior solid-solid culls).
+        for (int r = base; r < base + 4; ++r) for (int v = v0; v < v0 + 4; ++v) {
+            FaceCullColumn col{};
+            col.solid = packPredBits(S + 2, [&](int i) {
+                return blockProperties(snap.get({face, cu0 - 1 + i, v, r})).solid;
+            });
+            col.refined = packPredBits(S + 2, [&](int i) {
+                const SurfaceCellAddress a{face, cu0 - 1 + i, v, r};
+                return snap.radialInBounds(a.radial) && snap.hasMicroDetail(a);
+            });
+            const FaceCullWord uPos = cullMacroPos(col.solid, col.refined);
+            const FaceCullWord uNeg = cullMacroNeg(col.solid, col.refined);
+            for (int u = u0; u < u0 + 4; ++u) {
+                const int bit = faceCullBitIndex(u - cu0);
+                const SurfaceCellAddress a{face, u, v, r};
+                require(faceCullTest(uPos, bit) == scalarSnapshotMacroCandidate(snap, a, 1, 0, 0),
+                        "snapshot bitmask U+ disagreed with scalar solid-solid cull");
+                require(faceCullTest(uNeg, bit) == scalarSnapshotMacroCandidate(snap, a, -1, 0, 0),
+                        "snapshot bitmask U- disagreed with scalar solid-solid cull");
+            }
+        }
+
+        const auto cachedMesh = buildPlanetSurfaceChunkMesh(*data);
+        const auto snapMesh = buildPlanetSurfaceChunkMesh(snap, addr);
+        require(cachedMesh.macroQuads == snapMesh.macroQuads && cachedMesh.microQuads == snapMesh.microQuads,
+                "bitmask mesher diverged cached vs snapshot topology");
+    }
+}
+
 } // namespace
 
 
@@ -3672,6 +3898,7 @@ int main() {
         testChunkOccupancyExtremityAndAdaptiveRep();
         testSphericalMacroAndMicroGreedyMeshing();
         testSphericalMeshWorkerDeterminismAfterGreedy();
+        testBitmaskFaceCullAgreesWithSolidSolid();
         std::cout << "Elysium headless tests: PASS\n";
         return 0;
     } catch (const std::exception& e) {

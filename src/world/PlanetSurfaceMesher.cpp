@@ -4,6 +4,7 @@
 #include "core/Determinism.hpp"
 #include "world/Block.hpp"
 #include "world/BiomeCatalog.hpp"
+#include "world/FaceCullBitmasks.hpp"
 
 #include <algorithm>
 #include <array>
@@ -246,6 +247,29 @@ struct GreedyMaskCell {
     bool active{};
 };
 
+// Axis: 0=U, 1=V, 2=R. origin is the coordinate of bit 0 (typically -1 halo).
+FaceCullColumn packSnapshotColumn(const PlanetSurfaceSnapshot& planet, CubeFace face,
+                                  int u, int v, int r, int axis, int origin, int count) {
+    auto addressAt = [&](int i) {
+        SurfaceCellAddress a{face, u, v, r};
+        const int p = origin + i;
+        if (axis == 0) a.u = p;
+        else if (axis == 1) a.v = p;
+        else a.radial = p;
+        return a;
+    };
+    FaceCullColumn col{};
+    col.solid = packPredBits(count, [&](int i) {
+        return blockProperties(planet.get(addressAt(i))).solid;
+    });
+    col.refined = packPredBits(count, [&](int i) {
+        const auto a = addressAt(i);
+        if (!planet.radialInBounds(a.radial)) return false;
+        return planet.hasMicroDetail(a);
+    });
+    return col;
+}
+
 // Rectangle merger in face-grid space (P0-18/19). Cube-sphere quads remain
 // topological rectangles before projection; material must match.
 template <class Emit>
@@ -386,25 +410,16 @@ void emitRefinedCell(Builder& b,const PlanetSurfaceSnapshot& p,SurfaceCellAddres
     auto at = [&](int mu, int mr, int mv) -> BlockType {
         return cells[static_cast<std::size_t>(MicroBrick::index(mu, mr, mv))];
     };
-    auto exposed = [&](int mu, int mr, int mv, CellFace face) -> bool {
+    auto microSolid = [&](int mu, int mr, int mv) -> bool {
         int nmu=mu,nmr=mr,nmv=mv;
         int du=0,dv=0,dr=0;
-        switch(face) {
-            case CellFace::UPos: ++nmu; if(nmu>=N){nmu=0;du=1;} break;
-            case CellFace::UNeg: --nmu; if(nmu<0){nmu=N-1;du=-1;} break;
-            case CellFace::VPos: ++nmv; if(nmv>=N){nmv=0;dv=1;} break;
-            case CellFace::VNeg: --nmv; if(nmv<0){nmv=N-1;dv=-1;} break;
-            case CellFace::RPos: ++nmr; if(nmr>=N){nmr=0;dr=1;} break;
-            case CellFace::RNeg: --nmr; if(nmr<0){nmr=N-1;dr=-1;} break;
-        }
-        BlockType neighborType;
-        if (du==0 && dv==0 && dr==0) neighborType = at(nmu, nmr, nmv);
-        else {
-            SurfaceCellAddress n{a.face, a.u + du, a.v + dv, a.radial + dr};
-            n = p.normalize(n);
-            neighborType = p.microGet(n, nmu, nmr, nmv);
-        }
-        return !blockProperties(neighborType).solid;
+        if (nmu>=N){nmu=0;du=1;} else if (nmu<0){nmu=N-1;du=-1;}
+        if (nmv>=N){nmv=0;dv=1;} else if (nmv<0){nmv=N-1;dv=-1;}
+        if (nmr>=N){nmr=0;dr=1;} else if (nmr<0){nmr=N-1;dr=-1;}
+        const BlockType neighborType = (du==0 && dv==0 && dr==0)
+            ? at(nmu, nmr, nmv)
+            : p.microGet(p.normalize({a.face, a.u + du, a.v + dv, a.radial + dr}), nmu, nmr, nmv);
+        return blockProperties(neighborType).solid;
     };
 
     auto emitMicro=[&](CellFace face,int mu,int mr,int mv,int w,int h,BlockType type){
@@ -414,49 +429,58 @@ void emitRefinedCell(Builder& b,const PlanetSurfaceSnapshot& p,SurfaceCellAddres
         b.emit(type,q[0],q[1],q[2],q[3],normalize(avg4(q[0],q[1],q[2],q[3])-mc),faceLight(face),true);
     };
 
+    std::array<FaceCullWord, MicroBrick::CellCount / MicroBrick::Resolution> alongR{};
+    std::array<FaceCullWord, MicroBrick::CellCount / MicroBrick::Resolution> alongU{};
+    std::array<FaceCullWord, MicroBrick::CellCount / MicroBrick::Resolution> alongV{};
+    for (int mv=0; mv<N; ++mv) for (int mu=0; mu<N; ++mu)
+        alongR[static_cast<std::size_t>(mu+N*mv)] = packMicroAxisBits(N, mu, 0, mv, 2, microSolid);
+    for (int mr=0; mr<N; ++mr) for (int mv=0; mv<N; ++mv)
+        alongU[static_cast<std::size_t>(mv+N*mr)] = packMicroAxisBits(N, 0, mr, mv, 0, microSolid);
+    for (int mr=0; mr<N; ++mr) for (int mu=0; mu<N; ++mu)
+        alongV[static_cast<std::size_t>(mu+N*mr)] = packMicroAxisBits(N, mu, mr, 0, 1, microSolid);
+
     for(int mr=0;mr<N;++mr) {
+        const int bit = faceCullBitIndex(mr);
         for(CellFace face:{CellFace::RPos,CellFace::RNeg}) {
             std::fill(mask.begin(),mask.end(),GreedyMaskCell{});
             for(int mv=0;mv<N;++mv) for(int mu=0;mu<N;++mu) {
-                const BlockType type=at(mu,mr,mv);
-                if(!blockProperties(type).solid) continue;
-                if(!exposed(mu,mr,mv,face)) continue;
-                mask[static_cast<std::size_t>(mu+N*mv)]={type,true};
+                const FaceCullWord exposed = (face==CellFace::RPos)
+                    ? cullSolidSolidPos(alongR[static_cast<std::size_t>(mu+N*mv)])
+                    : cullSolidSolidNeg(alongR[static_cast<std::size_t>(mu+N*mv)]);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(mu+N*mv)]={at(mu,mr,mv),true};
             }
             greedyMask(mask,N,N,[&](int u,int v,int w,int h,BlockType type){ emitMicro(face,u,mr,v,w,h,type); });
         }
     }
     for(int mu=0;mu<N;++mu) {
+        const int bit = faceCullBitIndex(mu);
         for(CellFace face:{CellFace::UPos,CellFace::UNeg}) {
             std::fill(mask.begin(),mask.end(),GreedyMaskCell{});
             for(int mr=0;mr<N;++mr) for(int mv=0;mv<N;++mv) {
-                const BlockType type=at(mu,mr,mv);
-                if(!blockProperties(type).solid) continue;
-                if(!exposed(mu,mr,mv,face)) continue;
-                mask[static_cast<std::size_t>(mv+N*mr)]={type,true};
+                const FaceCullWord exposed = (face==CellFace::UPos)
+                    ? cullSolidSolidPos(alongU[static_cast<std::size_t>(mv+N*mr)])
+                    : cullSolidSolidNeg(alongU[static_cast<std::size_t>(mv+N*mr)]);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(mv+N*mr)]={at(mu,mr,mv),true};
             }
             greedyMask(mask,N,N,[&](int u,int v,int w,int h,BlockType type){ emitMicro(face,mu,v,u,w,h,type); });
         }
     }
     for(int mv=0;mv<N;++mv) {
+        const int bit = faceCullBitIndex(mv);
         for(CellFace face:{CellFace::VPos,CellFace::VNeg}) {
             std::fill(mask.begin(),mask.end(),GreedyMaskCell{});
             for(int mr=0;mr<N;++mr) for(int mu=0;mu<N;++mu) {
-                const BlockType type=at(mu,mr,mv);
-                if(!blockProperties(type).solid) continue;
-                if(!exposed(mu,mr,mv,face)) continue;
-                mask[static_cast<std::size_t>(mu+N*mr)]={type,true};
+                const FaceCullWord exposed = (face==CellFace::VPos)
+                    ? cullSolidSolidPos(alongV[static_cast<std::size_t>(mu+N*mr)])
+                    : cullSolidSolidNeg(alongV[static_cast<std::size_t>(mu+N*mr)]);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(mu+N*mr)]={at(mu,mr,mv),true};
             }
             greedyMask(mask,N,N,[&](int u,int v,int w,int h,BlockType type){ emitMicro(face,u,v,mv,w,h,type); });
         }
     }
-}
-
-bool snapshotMacroCandidate(const PlanetSurfaceSnapshot& planet, SurfaceCellAddress a, CellFace face, BlockType type) {
-    if (planet.hasMicroDetail(a) || !blockProperties(type).solid) return false;
-    const auto n=neighborOf(planet,a,face);
-    if (planet.radialInBounds(n.radial) && planet.hasMicroDetail(n)) return false;
-    return !blockProperties(planet.get(n)).solid;
 }
 
 } // namespace
@@ -477,53 +501,82 @@ CpuMeshData buildPlanetSurfaceChunkMesh(const PlanetSurfaceSnapshot& planet,
     constexpr std::array<CellFace,6> faces{CellFace::UPos,CellFace::UNeg,CellFace::VPos,CellFace::VNeg,CellFace::RPos,CellFace::RNeg};
 
     // Greedy merge coplanar macro faces in cube-sphere face-grid space (P0-19).
+    // Candidate faces use P0-21 bitmask solid-solid culls with a one-cell halo
+    // so cube-face seams and mantle/sky radial neighbors stay in the word.
     std::vector<GreedyMaskCell> mask;
+    const int rBits = wr + kFaceCullHalo * 2;
+    const int uBits = wu + kFaceCullHalo * 2;
+    const int vBits = wv + kFaceCullHalo * 2;
 
-    // R+/- : fixed r, mask (u,v)
-    mask.assign(static_cast<std::size_t>(wu*wv),{});
-    for(int r=0;r<wr;++r) {
-        for(CellFace face:{CellFace::RPos,CellFace::RNeg}) {
-            std::fill(mask.begin(),mask.end(),GreedyMaskCell{});
-            for(int v=v0;v<v1;++v) for(int u=u0;u<u1;++u) {
-                const SurfaceCellAddress a{chunk.face,u,v,r};
-                const BlockType type=planet.get(a);
-                if(!snapshotMacroCandidate(planet,a,face,type)) continue;
-                mask[static_cast<std::size_t>((u-u0)+wu*(v-v0))]={type,true};
+    // R+/- : fixed r, mask (u,v) — pack along radial.
+    std::vector<FaceCullColumn> rCols(static_cast<std::size_t>(wu * wv));
+    for (int v = v0; v < v1; ++v) for (int u = u0; u < u1; ++u)
+        rCols[static_cast<std::size_t>((u - u0) + wu * (v - v0))] =
+            packSnapshotColumn(planet, chunk.face, u, v, 0, 2, -kFaceCullHalo, rBits);
+    mask.assign(static_cast<std::size_t>(wu * wv), {});
+    for (int r = 0; r < wr; ++r) {
+        const int bit = faceCullBitIndex(r);
+        for (CellFace face : {CellFace::RPos, CellFace::RNeg}) {
+            std::fill(mask.begin(), mask.end(), GreedyMaskCell{});
+            for (int v = v0; v < v1; ++v) for (int u = u0; u < u1; ++u) {
+                const auto& col = rCols[static_cast<std::size_t>((u - u0) + wu * (v - v0))];
+                const FaceCullWord exposed = (face == CellFace::RPos)
+                    ? cullMacroPos(col.solid, col.refined)
+                    : cullMacroNeg(col.solid, col.refined);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>((u - u0) + wu * (v - v0))] =
+                    {planet.get({chunk.face, u, v, r}), true};
             }
-            greedyMask(mask,wu,wv,[&](int gu,int gv,int w,int h,BlockType type){
-                emitMacroFaceExtent(builder,planet,{chunk.face,u0+gu,v0+gv,r},face,type,w,h);
+            greedyMask(mask, wu, wv, [&](int gu, int gv, int w, int h, BlockType type) {
+                emitMacroFaceExtent(builder, planet, {chunk.face, u0 + gu, v0 + gv, r}, face, type, w, h);
             });
         }
     }
-    // U+/- : fixed u, mask (v,r)
-    mask.assign(static_cast<std::size_t>(wv*wr),{});
-    for(int u=u0;u<u1;++u) {
-        for(CellFace face:{CellFace::UPos,CellFace::UNeg}) {
-            std::fill(mask.begin(),mask.end(),GreedyMaskCell{});
-            for(int r=0;r<wr;++r) for(int v=v0;v<v1;++v) {
-                const SurfaceCellAddress a{chunk.face,u,v,r};
-                const BlockType type=planet.get(a);
-                if(!snapshotMacroCandidate(planet,a,face,type)) continue;
-                mask[static_cast<std::size_t>((v-v0)+wv*r)]={type,true};
+    // U+/- : fixed u, mask (v,r) — pack along U (halo wraps via snapshot get/normalize).
+    std::vector<FaceCullColumn> uCols(static_cast<std::size_t>(wv * wr));
+    for (int r = 0; r < wr; ++r) for (int v = v0; v < v1; ++v)
+        uCols[static_cast<std::size_t>((v - v0) + wv * r)] =
+            packSnapshotColumn(planet, chunk.face, 0, v, r, 0, u0 - kFaceCullHalo, uBits);
+    mask.assign(static_cast<std::size_t>(wv * wr), {});
+    for (int u = u0; u < u1; ++u) {
+        const int bit = faceCullBitIndex(u - u0);
+        for (CellFace face : {CellFace::UPos, CellFace::UNeg}) {
+            std::fill(mask.begin(), mask.end(), GreedyMaskCell{});
+            for (int r = 0; r < wr; ++r) for (int v = v0; v < v1; ++v) {
+                const auto& col = uCols[static_cast<std::size_t>((v - v0) + wv * r)];
+                const FaceCullWord exposed = (face == CellFace::UPos)
+                    ? cullMacroPos(col.solid, col.refined)
+                    : cullMacroNeg(col.solid, col.refined);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>((v - v0) + wv * r)] =
+                    {planet.get({chunk.face, u, v, r}), true};
             }
-            greedyMask(mask,wv,wr,[&](int gv,int gr,int w,int h,BlockType type){
-                emitMacroFaceExtent(builder,planet,{chunk.face,u,v0+gv,gr},face,type,w,h);
+            greedyMask(mask, wv, wr, [&](int gv, int gr, int w, int h, BlockType type) {
+                emitMacroFaceExtent(builder, planet, {chunk.face, u, v0 + gv, gr}, face, type, w, h);
             });
         }
     }
-    // V+/- : fixed v, mask (u,r)
-    mask.assign(static_cast<std::size_t>(wu*wr),{});
-    for(int v=v0;v<v1;++v) {
-        for(CellFace face:{CellFace::VPos,CellFace::VNeg}) {
-            std::fill(mask.begin(),mask.end(),GreedyMaskCell{});
-            for(int r=0;r<wr;++r) for(int u=u0;u<u1;++u) {
-                const SurfaceCellAddress a{chunk.face,u,v,r};
-                const BlockType type=planet.get(a);
-                if(!snapshotMacroCandidate(planet,a,face,type)) continue;
-                mask[static_cast<std::size_t>((u-u0)+wu*r)]={type,true};
+    // V+/- : fixed v, mask (u,r) — pack along V.
+    std::vector<FaceCullColumn> vCols(static_cast<std::size_t>(wu * wr));
+    for (int r = 0; r < wr; ++r) for (int u = u0; u < u1; ++u)
+        vCols[static_cast<std::size_t>((u - u0) + wu * r)] =
+            packSnapshotColumn(planet, chunk.face, u, 0, r, 1, v0 - kFaceCullHalo, vBits);
+    mask.assign(static_cast<std::size_t>(wu * wr), {});
+    for (int v = v0; v < v1; ++v) {
+        const int bit = faceCullBitIndex(v - v0);
+        for (CellFace face : {CellFace::VPos, CellFace::VNeg}) {
+            std::fill(mask.begin(), mask.end(), GreedyMaskCell{});
+            for (int r = 0; r < wr; ++r) for (int u = u0; u < u1; ++u) {
+                const auto& col = vCols[static_cast<std::size_t>((u - u0) + wu * r)];
+                const FaceCullWord exposed = (face == CellFace::VPos)
+                    ? cullMacroPos(col.solid, col.refined)
+                    : cullMacroNeg(col.solid, col.refined);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>((u - u0) + wu * r)] =
+                    {planet.get({chunk.face, u, v, r}), true};
             }
-            greedyMask(mask,wu,wr,[&](int gu,int gr,int w,int h,BlockType type){
-                emitMacroFaceExtent(builder,planet,{chunk.face,u0+gu,v,gr},face,type,w,h);
+            greedyMask(mask, wu, wr, [&](int gu, int gr, int w, int h, BlockType type) {
+                emitMacroFaceExtent(builder, planet, {chunk.face, u0 + gu, v, gr}, face, type, w, h);
             });
         }
     }
@@ -908,6 +961,27 @@ void cachedGreedyMask(std::vector<CachedGreedyMaskCell>& mask, int width, int he
     }
 }
 
+FaceCullColumn packCachedColumn(const SurfaceChunkData& chunk, int lu, int lv, int lr,
+                                int axis, int origin, int count) {
+    auto localAt = [&](int i, int& x, int& y, int& z) {
+        x = lu; y = lv; z = lr;
+        const int p = origin + i;
+        if (axis == 0) x = p;
+        else if (axis == 1) y = p;
+        else z = p;
+    };
+    FaceCullColumn col{};
+    col.solid = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0; localAt(i,x,y,z);
+        return blockProperties(chunk.getWithHalo(x,y,z)).solid;
+    });
+    col.refined = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0; localAt(i,x,y,z);
+        return chunk.hasMicroDetail(cachedWorldAddress(chunk,x,y,z));
+    });
+    return col;
+}
+
 void emitCachedRefined(Builder& b,const SurfaceChunkData& c,int lu,int lv,int lr,SurfaceCellAddress a) {
     constexpr int N=MicroBrick::Resolution;
     std::vector<CachedGreedyMaskCell> mask(static_cast<std::size_t>(N*N));
@@ -916,17 +990,12 @@ void emitCachedRefined(Builder& b,const SurfaceChunkData& c,int lu,int lv,int lr
     auto at = [&](int mu, int mr, int mv) -> BlockType {
         return cells[static_cast<std::size_t>(MicroBrick::index(mu, mr, mv))];
     };
-    auto boundarySolid = [&](int mu, int mr, int mv, CellFace face) -> bool {
+    auto microSolid = [&](int mu, int mr, int mv) -> bool {
         int nmu=mu,nmr=mr,nmv=mv;
         int du=0,dv=0,dr=0;
-        switch(face) {
-            case CellFace::UPos: ++nmu; if(nmu>=N){nmu=0;du=1;} break;
-            case CellFace::UNeg: --nmu; if(nmu<0){nmu=N-1;du=-1;} break;
-            case CellFace::VPos: ++nmv; if(nmv>=N){nmv=0;dv=1;} break;
-            case CellFace::VNeg: --nmv; if(nmv<0){nmv=N-1;dv=-1;} break;
-            case CellFace::RPos: ++nmr; if(nmr>=N){nmr=0;dr=1;} break;
-            case CellFace::RNeg: --nmr; if(nmr<0){nmr=N-1;dr=-1;} break;
-        }
+        if (nmu>=N){nmu=0;du=1;} else if (nmu<0){nmu=N-1;du=-1;}
+        if (nmv>=N){nmv=0;dv=1;} else if (nmv<0){nmv=N-1;dv=-1;}
+        if (nmr>=N){nmr=0;dr=1;} else if (nmr<0){nmr=N-1;dr=-1;}
         const BlockType neighbor = (du==0 && dv==0 && dr==0)
             ? at(nmu, nmr, nmv)
             : c.microGetLocal(lu+du, lv+dv, lr+dr, nmu, nmr, nmv);
@@ -1010,51 +1079,58 @@ void emitCachedRefined(Builder& b,const SurfaceChunkData& c,int lu,int lv,int lr
                  faceLight(face),true,aoExtent(mu,mr,mv,face,w,h));
     };
 
+    std::array<FaceCullWord, MicroBrick::CellCount / MicroBrick::Resolution> alongR{};
+    std::array<FaceCullWord, MicroBrick::CellCount / MicroBrick::Resolution> alongU{};
+    std::array<FaceCullWord, MicroBrick::CellCount / MicroBrick::Resolution> alongV{};
+    for (int mv=0; mv<N; ++mv) for (int mu=0; mu<N; ++mu)
+        alongR[static_cast<std::size_t>(mu+N*mv)] = packMicroAxisBits(N, mu, 0, mv, 2, microSolid);
+    for (int mr=0; mr<N; ++mr) for (int mv=0; mv<N; ++mv)
+        alongU[static_cast<std::size_t>(mv+N*mr)] = packMicroAxisBits(N, 0, mr, mv, 0, microSolid);
+    for (int mr=0; mr<N; ++mr) for (int mu=0; mu<N; ++mu)
+        alongV[static_cast<std::size_t>(mu+N*mr)] = packMicroAxisBits(N, mu, mr, 0, 1, microSolid);
+
     for(int mr=0;mr<N;++mr) {
+        const int bit = faceCullBitIndex(mr);
         for(CellFace face:{CellFace::RPos,CellFace::RNeg}) {
             std::fill(mask.begin(),mask.end(),CachedGreedyMaskCell{});
             for(int mv=0;mv<N;++mv) for(int mu=0;mu<N;++mu) {
-                const BlockType type=at(mu,mr,mv);
-                if(!blockProperties(type).solid) continue;
-                if(boundarySolid(mu,mr,mv,face)) continue;
-                mask[static_cast<std::size_t>(mu+N*mv)]={type,true};
+                const FaceCullWord exposed = (face==CellFace::RPos)
+                    ? cullSolidSolidPos(alongR[static_cast<std::size_t>(mu+N*mv)])
+                    : cullSolidSolidNeg(alongR[static_cast<std::size_t>(mu+N*mv)]);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(mu+N*mv)]={at(mu,mr,mv),true};
             }
             cachedGreedyMask(mask,N,N,[&](int u,int v,int w,int h,BlockType type){ emitMicro(face,u,mr,v,w,h,type); });
         }
     }
     for(int mu=0;mu<N;++mu) {
+        const int bit = faceCullBitIndex(mu);
         for(CellFace face:{CellFace::UPos,CellFace::UNeg}) {
             std::fill(mask.begin(),mask.end(),CachedGreedyMaskCell{});
             for(int mr=0;mr<N;++mr) for(int mv=0;mv<N;++mv) {
-                const BlockType type=at(mu,mr,mv);
-                if(!blockProperties(type).solid) continue;
-                if(boundarySolid(mu,mr,mv,face)) continue;
-                mask[static_cast<std::size_t>(mv+N*mr)]={type,true};
+                const FaceCullWord exposed = (face==CellFace::UPos)
+                    ? cullSolidSolidPos(alongU[static_cast<std::size_t>(mv+N*mr)])
+                    : cullSolidSolidNeg(alongU[static_cast<std::size_t>(mv+N*mr)]);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(mv+N*mr)]={at(mu,mr,mv),true};
             }
             cachedGreedyMask(mask,N,N,[&](int u,int v,int w,int h,BlockType type){ emitMicro(face,mu,v,u,w,h,type); });
         }
     }
     for(int mv=0;mv<N;++mv) {
+        const int bit = faceCullBitIndex(mv);
         for(CellFace face:{CellFace::VPos,CellFace::VNeg}) {
             std::fill(mask.begin(),mask.end(),CachedGreedyMaskCell{});
             for(int mr=0;mr<N;++mr) for(int mu=0;mu<N;++mu) {
-                const BlockType type=at(mu,mr,mv);
-                if(!blockProperties(type).solid) continue;
-                if(boundarySolid(mu,mr,mv,face)) continue;
-                mask[static_cast<std::size_t>(mu+N*mr)]={type,true};
+                const FaceCullWord exposed = (face==CellFace::VPos)
+                    ? cullSolidSolidPos(alongV[static_cast<std::size_t>(mu+N*mr)])
+                    : cullSolidSolidNeg(alongV[static_cast<std::size_t>(mu+N*mr)]);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(mu+N*mr)]={at(mu,mr,mv),true};
             }
             cachedGreedyMask(mask,N,N,[&](int u,int v,int w,int h,BlockType type){ emitMicro(face,u,v,mv,w,h,type); });
         }
     }
-}
-
-bool cachedMacroCandidate(const SurfaceChunkData& chunk,int lu,int lv,int lr,CellFace face,BlockType type) {
-    const SurfaceCellAddress a=cachedWorldAddress(chunk,lu,lv,lr);
-    if(chunk.hasMicroDetail(a) || !blockProperties(type).solid) return false;
-    int du=0,dv=0,dr=0; faceDelta(face,du,dv,dr);
-    const auto neighbor=cachedWorldAddress(chunk,lu+du,lv+dv,lr+dr);
-    if(chunk.hasMicroDetail(neighbor)) return false;
-    return !blockProperties(chunk.getWithHalo(lu+du,lv+dv,lr+dr)).solid;
 }
 
 } // namespace
@@ -1079,51 +1155,79 @@ CpuMeshData buildPlanetSurfaceChunkMesh(const SurfaceChunkData& chunk) {
     const int lr1 = ext.any ? ext.maxZ + 1 : PlanetSurface::ChunkSize;
 
     constexpr int S=PlanetSurface::ChunkSize;
+    constexpr int kColBits = S + kFaceCullHalo * 2;
     constexpr std::array<CellFace,6> faces{CellFace::UPos,CellFace::UNeg,CellFace::VPos,CellFace::VNeg,CellFace::RPos,CellFace::RNeg};
     std::vector<CachedGreedyMaskCell> mask(static_cast<std::size_t>(S*S));
+    const int nU = lu1 - lu0;
+    const int nV = lv1 - lv0;
+    const int nR = lr1 - lr0;
 
-    // R+/- : fixed lr, mask (lu,lv) — P0-19 spherical macro greedy.
-    for(int lr=lr0;lr<lr1;++lr) {
-        for(CellFace face:{CellFace::RPos,CellFace::RNeg}) {
-            std::fill(mask.begin(),mask.end(),CachedGreedyMaskCell{});
-            for(int lv=lv0;lv<lv1;++lv) for(int lu=lu0;lu<lu1;++lu) {
-                const BlockType type=chunk.getLocal(lu,lv,lr);
-                if(!cachedMacroCandidate(chunk,lu,lv,lr,face,type)) continue;
-                mask[static_cast<std::size_t>(lu+S*lv)]={type,true};
+    // R+/- : fixed lr, mask (lu,lv) — P0-19 spherical macro greedy + P0-21 bitmask cull.
+    std::vector<FaceCullColumn> rCols(static_cast<std::size_t>(nU * nV));
+    for (int lv = lv0; lv < lv1; ++lv) for (int lu = lu0; lu < lu1; ++lu)
+        rCols[static_cast<std::size_t>((lu - lu0) + nU * (lv - lv0))] =
+            packCachedColumn(chunk, lu, lv, 0, 2, -kFaceCullHalo, kColBits);
+    for (int lr = lr0; lr < lr1; ++lr) {
+        const int bit = faceCullBitIndex(lr);
+        for (CellFace face : {CellFace::RPos, CellFace::RNeg}) {
+            std::fill(mask.begin(), mask.end(), CachedGreedyMaskCell{});
+            for (int lv = lv0; lv < lv1; ++lv) for (int lu = lu0; lu < lu1; ++lu) {
+                const auto& col = rCols[static_cast<std::size_t>((lu - lu0) + nU * (lv - lv0))];
+                const FaceCullWord exposed = (face == CellFace::RPos)
+                    ? cullMacroPos(col.solid, col.refined)
+                    : cullMacroNeg(col.solid, col.refined);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(lu + S * lv)] = {chunk.getLocal(lu, lv, lr), true};
             }
-            cachedGreedyMask(mask,S,S,[&](int gu,int gv,int w,int h,BlockType type){
-                const auto a=cachedWorldAddress(chunk,gu,gv,lr);
-                emitCachedMacroFaceExtent(builder,chunk,gu,gv,lr,a,face,type,w,h);
+            cachedGreedyMask(mask, S, S, [&](int gu, int gv, int w, int h, BlockType type) {
+                const auto a = cachedWorldAddress(chunk, gu, gv, lr);
+                emitCachedMacroFaceExtent(builder, chunk, gu, gv, lr, a, face, type, w, h);
             });
         }
     }
-    // U+/- : fixed lu, mask (lv,lr)
-    for(int lu=lu0;lu<lu1;++lu) {
-        for(CellFace face:{CellFace::UPos,CellFace::UNeg}) {
-            std::fill(mask.begin(),mask.end(),CachedGreedyMaskCell{});
-            for(int lr=lr0;lr<lr1;++lr) for(int lv=lv0;lv<lv1;++lv) {
-                const BlockType type=chunk.getLocal(lu,lv,lr);
-                if(!cachedMacroCandidate(chunk,lu,lv,lr,face,type)) continue;
-                mask[static_cast<std::size_t>(lv+S*lr)]={type,true};
+    // U+/- : fixed lu, mask (lv,lr) — pack along U including one-cell halo.
+    std::vector<FaceCullColumn> uCols(static_cast<std::size_t>(nV * nR));
+    for (int lr = lr0; lr < lr1; ++lr) for (int lv = lv0; lv < lv1; ++lv)
+        uCols[static_cast<std::size_t>((lv - lv0) + nV * (lr - lr0))] =
+            packCachedColumn(chunk, 0, lv, lr, 0, -kFaceCullHalo, kColBits);
+    for (int lu = lu0; lu < lu1; ++lu) {
+        const int bit = faceCullBitIndex(lu);
+        for (CellFace face : {CellFace::UPos, CellFace::UNeg}) {
+            std::fill(mask.begin(), mask.end(), CachedGreedyMaskCell{});
+            for (int lr = lr0; lr < lr1; ++lr) for (int lv = lv0; lv < lv1; ++lv) {
+                const auto& col = uCols[static_cast<std::size_t>((lv - lv0) + nV * (lr - lr0))];
+                const FaceCullWord exposed = (face == CellFace::UPos)
+                    ? cullMacroPos(col.solid, col.refined)
+                    : cullMacroNeg(col.solid, col.refined);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(lv + S * lr)] = {chunk.getLocal(lu, lv, lr), true};
             }
-            cachedGreedyMask(mask,S,S,[&](int gv,int gr,int w,int h,BlockType type){
-                const auto a=cachedWorldAddress(chunk,lu,gv,gr);
-                emitCachedMacroFaceExtent(builder,chunk,lu,gv,gr,a,face,type,w,h);
+            cachedGreedyMask(mask, S, S, [&](int gv, int gr, int w, int h, BlockType type) {
+                const auto a = cachedWorldAddress(chunk, lu, gv, gr);
+                emitCachedMacroFaceExtent(builder, chunk, lu, gv, gr, a, face, type, w, h);
             });
         }
     }
     // V+/- : fixed lv, mask (lu,lr)
-    for(int lv=lv0;lv<lv1;++lv) {
-        for(CellFace face:{CellFace::VPos,CellFace::VNeg}) {
-            std::fill(mask.begin(),mask.end(),CachedGreedyMaskCell{});
-            for(int lr=lr0;lr<lr1;++lr) for(int lu=lu0;lu<lu1;++lu) {
-                const BlockType type=chunk.getLocal(lu,lv,lr);
-                if(!cachedMacroCandidate(chunk,lu,lv,lr,face,type)) continue;
-                mask[static_cast<std::size_t>(lu+S*lr)]={type,true};
+    std::vector<FaceCullColumn> vCols(static_cast<std::size_t>(nU * nR));
+    for (int lr = lr0; lr < lr1; ++lr) for (int lu = lu0; lu < lu1; ++lu)
+        vCols[static_cast<std::size_t>((lu - lu0) + nU * (lr - lr0))] =
+            packCachedColumn(chunk, lu, 0, lr, 1, -kFaceCullHalo, kColBits);
+    for (int lv = lv0; lv < lv1; ++lv) {
+        const int bit = faceCullBitIndex(lv);
+        for (CellFace face : {CellFace::VPos, CellFace::VNeg}) {
+            std::fill(mask.begin(), mask.end(), CachedGreedyMaskCell{});
+            for (int lr = lr0; lr < lr1; ++lr) for (int lu = lu0; lu < lu1; ++lu) {
+                const auto& col = vCols[static_cast<std::size_t>((lu - lu0) + nU * (lr - lr0))];
+                const FaceCullWord exposed = (face == CellFace::VPos)
+                    ? cullMacroPos(col.solid, col.refined)
+                    : cullMacroNeg(col.solid, col.refined);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>(lu + S * lr)] = {chunk.getLocal(lu, lv, lr), true};
             }
-            cachedGreedyMask(mask,S,S,[&](int gu,int gr,int w,int h,BlockType type){
-                const auto a=cachedWorldAddress(chunk,gu,lv,gr);
-                emitCachedMacroFaceExtent(builder,chunk,gu,lv,gr,a,face,type,w,h);
+            cachedGreedyMask(mask, S, S, [&](int gu, int gr, int w, int h, BlockType type) {
+                const auto a = cachedWorldAddress(chunk, gu, lv, gr);
+                emitCachedMacroFaceExtent(builder, chunk, gu, lv, gr, a, face, type, w, h);
             });
         }
     }

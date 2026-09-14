@@ -1,6 +1,7 @@
 #include "world/VoxelMesher.hpp"
 
 #include "world/Block.hpp"
+#include "world/FaceCullBitmasks.hpp"
 
 #include <algorithm>
 #include <array>
@@ -126,15 +127,36 @@ void greedyMask(std::vector<MaskCell>& mask, int width, int height, Emit&& emit)
     }
 }
 
-bool macroFaceCandidate(const WorldSnapshot& world, int x, int y, int z, int nx, int ny, int nz) {
-    if (!world.inBounds(x,y,z) || world.isRefined(x,y,z)) return false;
-    const BlockType type = world.get(x,y,z);
-    if (!blockProperties(type).solid) return false;
-    const int qx = x + nx, qy = y + ny, qz = z + nz;
-    if (!world.inBounds(qx,qy,qz)) return true;
-    if (world.isRefined(qx,qy,qz)) return false; // emitted at micro boundary resolution
-    if (blockProperties(world.get(qx,qy,qz)).solid) return false;
-    return world.isExteriorAir(qx,qy,qz);
+struct PlanarCullColumn {
+    FaceCullWord solid{};
+    FaceCullWord refined{};
+    FaceCullWord emitNeighbor{};
+};
+
+// Pack one axis-aligned column including a one-cell halo on each end so
+// world-bound / chunk-edge neighbors participate in the shift cull (P0-21).
+PlanarCullColumn packPlanarColumn(const WorldSnapshot& world, int axis, int a, int b,
+                                  int origin, int count) {
+    auto coords = [&](int i, int& x, int& y, int& z) {
+        const int p = origin + i;
+        if (axis == 0) { x = p; y = a; z = b; }
+        else if (axis == 1) { x = a; y = p; z = b; }
+        else { x = a; y = b; z = p; }
+    };
+    PlanarCullColumn col{};
+    col.solid = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0; coords(i,x,y,z);
+        return world.inBounds(x,y,z) && blockProperties(world.get(x,y,z)).solid;
+    });
+    col.refined = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0; coords(i,x,y,z);
+        return world.inBounds(x,y,z) && world.isRefined(x,y,z);
+    });
+    col.emitNeighbor = packPredBits(count, [&](int i) {
+        int x=0,y=0,z=0; coords(i,x,y,z);
+        return !world.inBounds(x,y,z) || world.isExteriorAir(x,y,z);
+    });
+    return col;
 }
 
 int floorDiv(int value, int divisor) {
@@ -300,59 +322,93 @@ CpuMeshData buildChunkMesh(const WorldSnapshot& world, int chunkX, int chunkY, i
     const int z1 = std::min(z0 + WorldSnapshot::ChunkSize, WorldSnapshot::Depth);
     if (x0 >= x1 || y0 >= y1 || z0 >= z1) return builder.finish();
 
-    // +/- X faces: mask axes are Z (u) and Y (v).
-    std::vector<MaskCell> mask(static_cast<std::size_t>((z1-z0)*(y1-y0)));
-    for (int x=x0;x<x1;++x) {
-        for (int sign : {1,-1}) {
-            std::fill(mask.begin(),mask.end(),MaskCell{});
-            for (int y=y0;y<y1;++y) for (int z=z0;z<z1;++z) {
-                if (macroFaceCandidate(world,x,y,z,sign,0,0))
-                    mask[static_cast<std::size_t>((z-z0)+(z1-z0)*(y-y0))] = {world.get(x,y,z),true};
+    const int nx = x1 - x0;
+    const int ny = y1 - y0;
+    const int nz = z1 - z0;
+    const int xBits = nx + kFaceCullHalo * 2;
+    const int yBits = ny + kFaceCullHalo * 2;
+    const int zBits = nz + kFaceCullHalo * 2;
+
+    // +/- X faces: mask axes are Z (u) and Y (v). Pack solidity along X.
+    std::vector<MaskCell> mask(static_cast<std::size_t>(nz * ny));
+    std::vector<PlanarCullColumn> xCols(static_cast<std::size_t>(ny * nz));
+    for (int y = y0; y < y1; ++y) for (int z = z0; z < z1; ++z)
+        xCols[static_cast<std::size_t>((z - z0) + nz * (y - y0))] =
+            packPlanarColumn(world, 0, y, z, x0 - kFaceCullHalo, xBits);
+    for (int x = x0; x < x1; ++x) {
+        const int bit = faceCullBitIndex(x - x0);
+        for (int sign : {1, -1}) {
+            std::fill(mask.begin(), mask.end(), MaskCell{});
+            for (int y = y0; y < y1; ++y) for (int z = z0; z < z1; ++z) {
+                const auto& col = xCols[static_cast<std::size_t>((z - z0) + nz * (y - y0))];
+                const FaceCullWord exposed = (sign > 0)
+                    ? cullPlanarPos(col.solid, col.refined, col.emitNeighbor)
+                    : cullPlanarNeg(col.solid, col.refined, col.emitNeighbor);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>((z - z0) + nz * (y - y0))] = {world.get(x, y, z), true};
             }
-            greedyMask(mask,z1-z0,y1-y0,[&](int u,int v,int w,int h,BlockType type){
-                const float px = static_cast<float>(x + (sign>0 ? 1 : 0));
-                const float ya=static_cast<float>(y0+v), yb=static_cast<float>(y0+v+h);
-                const float za=static_cast<float>(z0+u), zb=static_cast<float>(z0+u+w);
-                if(sign>0) emitMacroQuad(builder,world,type,{1,0,0},{px,ya,za},{px,yb,za},{px,yb,zb},{px,ya,zb});
-                else emitMacroQuad(builder,world,type,{-1,0,0},{px,ya,zb},{px,yb,zb},{px,yb,za},{px,ya,za});
+            greedyMask(mask, nz, ny, [&](int u, int v, int w, int h, BlockType type) {
+                const float px = static_cast<float>(x + (sign > 0 ? 1 : 0));
+                const float ya = static_cast<float>(y0 + v), yb = static_cast<float>(y0 + v + h);
+                const float za = static_cast<float>(z0 + u), zb = static_cast<float>(z0 + u + w);
+                if (sign > 0) emitMacroQuad(builder, world, type, {1, 0, 0}, {px, ya, za}, {px, yb, za}, {px, yb, zb}, {px, ya, zb});
+                else emitMacroQuad(builder, world, type, {-1, 0, 0}, {px, ya, zb}, {px, yb, zb}, {px, yb, za}, {px, ya, za});
             });
         }
     }
 
-    // +/- Y faces: mask axes are X (u) and Z (v).
-    mask.assign(static_cast<std::size_t>((x1-x0)*(z1-z0)),{});
-    for (int y=y0;y<y1;++y) {
-        for (int sign : {1,-1}) {
-            std::fill(mask.begin(),mask.end(),MaskCell{});
-            for (int z=z0;z<z1;++z) for (int x=x0;x<x1;++x) {
-                if (macroFaceCandidate(world,x,y,z,0,sign,0))
-                    mask[static_cast<std::size_t>((x-x0)+(x1-x0)*(z-z0))] = {world.get(x,y,z),true};
+    // +/- Y faces: mask axes are X (u) and Z (v). Pack solidity along Y.
+    mask.assign(static_cast<std::size_t>(nx * nz), {});
+    std::vector<PlanarCullColumn> yCols(static_cast<std::size_t>(nx * nz));
+    for (int z = z0; z < z1; ++z) for (int x = x0; x < x1; ++x)
+        yCols[static_cast<std::size_t>((x - x0) + nx * (z - z0))] =
+            packPlanarColumn(world, 1, x, z, y0 - kFaceCullHalo, yBits);
+    for (int y = y0; y < y1; ++y) {
+        const int bit = faceCullBitIndex(y - y0);
+        for (int sign : {1, -1}) {
+            std::fill(mask.begin(), mask.end(), MaskCell{});
+            for (int z = z0; z < z1; ++z) for (int x = x0; x < x1; ++x) {
+                const auto& col = yCols[static_cast<std::size_t>((x - x0) + nx * (z - z0))];
+                const FaceCullWord exposed = (sign > 0)
+                    ? cullPlanarPos(col.solid, col.refined, col.emitNeighbor)
+                    : cullPlanarNeg(col.solid, col.refined, col.emitNeighbor);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>((x - x0) + nx * (z - z0))] = {world.get(x, y, z), true};
             }
-            greedyMask(mask,x1-x0,z1-z0,[&](int u,int v,int w,int h,BlockType type){
-                const float py=static_cast<float>(y+(sign>0?1:0));
-                const float xa=static_cast<float>(x0+u), xb=static_cast<float>(x0+u+w);
-                const float za=static_cast<float>(z0+v), zb=static_cast<float>(z0+v+h);
-                if(sign>0) emitMacroQuad(builder,world,type,{0,1,0},{xa,py,zb},{xb,py,zb},{xb,py,za},{xa,py,za});
-                else emitMacroQuad(builder,world,type,{0,-1,0},{xa,py,za},{xb,py,za},{xb,py,zb},{xa,py,zb});
+            greedyMask(mask, nx, nz, [&](int u, int v, int w, int h, BlockType type) {
+                const float py = static_cast<float>(y + (sign > 0 ? 1 : 0));
+                const float xa = static_cast<float>(x0 + u), xb = static_cast<float>(x0 + u + w);
+                const float za = static_cast<float>(z0 + v), zb = static_cast<float>(z0 + v + h);
+                if (sign > 0) emitMacroQuad(builder, world, type, {0, 1, 0}, {xa, py, zb}, {xb, py, zb}, {xb, py, za}, {xa, py, za});
+                else emitMacroQuad(builder, world, type, {0, -1, 0}, {xa, py, za}, {xb, py, za}, {xb, py, zb}, {xa, py, zb});
             });
         }
     }
 
-    // +/- Z faces: mask axes are X (u) and Y (v).
-    mask.assign(static_cast<std::size_t>((x1-x0)*(y1-y0)),{});
-    for (int z=z0;z<z1;++z) {
-        for (int sign : {1,-1}) {
-            std::fill(mask.begin(),mask.end(),MaskCell{});
-            for (int y=y0;y<y1;++y) for (int x=x0;x<x1;++x) {
-                if (macroFaceCandidate(world,x,y,z,0,0,sign))
-                    mask[static_cast<std::size_t>((x-x0)+(x1-x0)*(y-y0))] = {world.get(x,y,z),true};
+    // +/- Z faces: mask axes are X (u) and Y (v). Pack solidity along Z.
+    mask.assign(static_cast<std::size_t>(nx * ny), {});
+    std::vector<PlanarCullColumn> zCols(static_cast<std::size_t>(nx * ny));
+    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x)
+        zCols[static_cast<std::size_t>((x - x0) + nx * (y - y0))] =
+            packPlanarColumn(world, 2, x, y, z0 - kFaceCullHalo, zBits);
+    for (int z = z0; z < z1; ++z) {
+        const int bit = faceCullBitIndex(z - z0);
+        for (int sign : {1, -1}) {
+            std::fill(mask.begin(), mask.end(), MaskCell{});
+            for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+                const auto& col = zCols[static_cast<std::size_t>((x - x0) + nx * (y - y0))];
+                const FaceCullWord exposed = (sign > 0)
+                    ? cullPlanarPos(col.solid, col.refined, col.emitNeighbor)
+                    : cullPlanarNeg(col.solid, col.refined, col.emitNeighbor);
+                if (!faceCullTest(exposed, bit)) continue;
+                mask[static_cast<std::size_t>((x - x0) + nx * (y - y0))] = {world.get(x, y, z), true};
             }
-            greedyMask(mask,x1-x0,y1-y0,[&](int u,int v,int w,int h,BlockType type){
-                const float pz=static_cast<float>(z+(sign>0?1:0));
-                const float xa=static_cast<float>(x0+u), xb=static_cast<float>(x0+u+w);
-                const float ya=static_cast<float>(y0+v), yb=static_cast<float>(y0+v+h);
-                if(sign>0) emitMacroQuad(builder,world,type,{0,0,1},{xb,ya,pz},{xb,yb,pz},{xa,yb,pz},{xa,ya,pz});
-                else emitMacroQuad(builder,world,type,{0,0,-1},{xa,ya,pz},{xa,yb,pz},{xb,yb,pz},{xb,ya,pz});
+            greedyMask(mask, nx, ny, [&](int u, int v, int w, int h, BlockType type) {
+                const float pz = static_cast<float>(z + (sign > 0 ? 1 : 0));
+                const float xa = static_cast<float>(x0 + u), xb = static_cast<float>(x0 + u + w);
+                const float ya = static_cast<float>(y0 + v), yb = static_cast<float>(y0 + v + h);
+                if (sign > 0) emitMacroQuad(builder, world, type, {0, 0, 1}, {xb, ya, pz}, {xb, yb, pz}, {xa, yb, pz}, {xa, ya, pz});
+                else emitMacroQuad(builder, world, type, {0, 0, -1}, {xa, ya, pz}, {xa, yb, pz}, {xb, yb, pz}, {xb, ya, pz});
             });
         }
     }
