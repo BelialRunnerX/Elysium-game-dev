@@ -293,7 +293,7 @@ int World::generatedHeight(int x, int z) const {
 
     float base = 8.0f;
     float amplitude = 4.0f;
-    // Temperate keeps default base/amplitude. Catalog::flates get distinct
+    // Temperate keeps default base/amplitude. Catalog classes get distinct
     // profiles; Barren/Scorched values are unchanged (no GeneratorVersion bump).
     if (class_ == PlanetClass::Barren) { base = 7.0f; amplitude = 3.5f; }
     else if (class_ == PlanetClass::Scorched) { base = 7.0f; amplitude = 5.0f; }
