@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <iosfwd>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -150,5 +152,22 @@ private:
     void completeWaveIfEmpty();
     void failAction();
 };
+
+// Campaign save embed (ELYSIUM_SAVE 8, append-only before END). Idle directors
+// with actionId 0 are omitted. Records are written in ascending planetIndex.
+inline bool campaignSiegeEmbedEligible(const SurfaceSiegeDirector& director) {
+    const auto& state = director.state();
+    return !(state.phase == RegisterActionPhase::Idle && state.actionId == 0);
+}
+
+void appendCampaignSiegeEmbed(std::ostream& out,
+                              const SurfaceSiegeDirector* const* directors,
+                              int planetCount);
+bool restoreCampaignSiegeEmbed(std::istream& in,
+                               std::size_t siegeCount,
+                               SurfaceSiegeDirector* const* directors,
+                               int planetCount,
+                               std::string* error = nullptr);
+void reconcileCampaignSiegeAfterRestore(SurfaceSiegeDirector& director);
 
 } // namespace elysium
