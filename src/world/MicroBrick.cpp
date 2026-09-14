@@ -25,6 +25,15 @@ BlockType MicroBrick::getIndex(int idx) const {
     return (it != sparse_.end() && it->first == key) ? it->second : baseline_;
 }
 
+bool MicroBrick::hasOverride(int idx) const {
+    if (idx < 0 || idx >= CellCount) return false;
+    if (dense_) return (*dense_)[static_cast<std::size_t>(idx)] != baseline_;
+    const auto key = static_cast<std::uint16_t>(idx);
+    const auto it = std::lower_bound(sparse_.begin(), sparse_.end(), key,
+        [](const auto& p, std::uint16_t value) { return p.first < value; });
+    return it != sparse_.end() && it->first == key;
+}
+
 void MicroBrick::set(int x, int y, int z, BlockType type) {
     if (!inBounds(x,y,z)) return;
     setIndex(index(x,y,z), type);

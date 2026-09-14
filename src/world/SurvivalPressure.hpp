@@ -5,6 +5,14 @@
 
 namespace elysium {
 
+// Part 24 Survival — portable pressure → decision policy (no EnTT, no raylib,
+// no Presentation). Intentionally separate from PlanetEnvironment so the O2
+// blend seam (effectiveOxygenDrain) stays atmosphere-only.
+//
+// Sense/Game: compute effectiveOxygenDrain + hazard, then call
+// evaluateSurvivalPressure on current meters. ECS Commit still owns meter
+// mutation; this module only answers "what must the player decide to do?".
+
 struct SurvivalRateTable {
     float hungerDrainPerSecond{0.12f};
     float energySprintDrainPerSecond{13.0f};
@@ -13,6 +21,9 @@ struct SurvivalRateTable {
     float starvationDamagePerSecond{1.5f};
 };
 
+// Canonical metabolic / suit rates. Must stay numerically aligned with
+// EcsWorld::applyVitals / updateVitals energy+hunger math (ecs does not
+// include world/; values are duplicated there with a cross-reference).
 const SurvivalRateTable& survivalRateTable();
 
 struct SurvivalMeters {
@@ -23,6 +34,7 @@ struct SurvivalMeters {
 };
 
 struct SurvivalContext {
+    // Caller applies effectiveOxygenDrain(...) first — never re-blend O2 here.
     float effectiveOxygenDrainPerSecond{};
     float hazardDamagePerSecond{};
     bool sprinting{};
@@ -31,16 +43,16 @@ struct SurvivalContext {
 
 enum class SurvivalUrgency : std::uint8_t {
     None = 0,
-    Advise = 1,
-    Urgent = 2,
-    Critical = 3
+    Advise = 1,   // pressure present; optional action
+    Urgent = 2,   // soft threshold crossed
+    Critical = 3  // life-threatening / action required
 };
 
 struct SurvivalDecision {
-    SurvivalUrgency atmosphere{SurvivalUrgency::None};
-    SurvivalUrgency shelter{SurvivalUrgency::None};
-    SurvivalUrgency energy{SurvivalUrgency::None};
-    SurvivalUrgency food{SurvivalUrgency::None};
+    SurvivalUrgency atmosphere{SurvivalUrgency::None}; // seek sealed air / ship life-support
+    SurvivalUrgency shelter{SurvivalUrgency::None};    // leave hazard / find cover
+    SurvivalUrgency energy{SurvivalUrgency::None};     // stop sprint / rest
+    SurvivalUrgency food{SurvivalUrgency::None};       // eat / return to ship stores
 
     bool seekAtmosphere() const { return atmosphere != SurvivalUrgency::None; }
     bool seekShelter() const { return shelter != SurvivalUrgency::None; }
@@ -58,15 +70,20 @@ struct SurvivalDecision {
 
 std::string_view survivalUrgencyName(SurvivalUrgency urgency);
 
+// Fail-closed decision table over current meters + env pressure scalars.
 SurvivalDecision evaluateSurvivalPressure(const SurvivalMeters& meters,
                                           const SurvivalContext& context,
                                           const SurvivalRateTable& rates = survivalRateTable());
 
+// Pure one-tick projection matching ECS vitals energy/hunger/O2/hazard math
+// without linking EnTT. Headless tests use this to prove hunger/energy pressure.
 SurvivalMeters projectSurvivalMeters(SurvivalMeters meters,
                                      const SurvivalContext& context,
                                      float dt,
                                      const SurvivalRateTable& rates = survivalRateTable());
 
+// Minimal ration restore hook (no IndustryItemId — avoids MachineType/item churn).
+// Clamps to [0,100]. Returns resulting hunger.
 float applySurvivalRation(float hunger, float restoreAmount = 40.0f);
 
 } // namespace elysium

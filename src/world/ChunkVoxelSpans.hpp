@@ -10,6 +10,14 @@
 
 namespace elysium {
 
+// Adaptive runtime voxel payload for a fixed cubic volume (SurfaceChunkData
+// halo extent today). Indexing matches the chunk cache: radial varies fastest,
+// then U, then V — so RLE along radial matches stratified planetary columns.
+//
+// Encode-time state machine (P0-7 / P0-9 / P0-10):
+//   Homogeneous -> RleColumns -> Dense
+// Representation changes MUST preserve identical logical voxels. SurfaceChunkData
+// remains read-only after encode; edits live in PlanetSurface journals.
 class ChunkVoxelSpans {
 public:
     enum class Mode : std::uint8_t {
@@ -23,6 +31,8 @@ public:
         BlockType type{BlockType::Air};
     };
 
+    // Promote RLE to dense when packed run storage would meet or exceed this
+    // fraction of a dense BlockType cube (avoids pathological random ore maps).
     static constexpr float DenseByteRatio = 0.85f;
 
     ChunkVoxelSpans() = default;
@@ -52,12 +62,14 @@ private:
     int extent_{0};
     BlockType homogeneous_{BlockType::Air};
     std::vector<Run> runs_;
-    std::vector<std::uint32_t> columnRunOffsets_;
+    std::vector<std::uint32_t> columnRunOffsets_; // size columns+1 into runs_
     std::vector<BlockType> dense_;
 
     void encodeFromDense(const BlockType* cells);
 };
 
+// Cached spherical-field basis (axes + phases). Independent of sample position;
+// keyed by generatorVersion + world seed + field label (P0-12 noise caching).
 struct SphericalNoiseBasis {
     static constexpr int OctaveCount = 4;
     std::array<Vec3, OctaveCount> axes{};
