@@ -40,14 +40,6 @@ Vec3 aabbCorner(Vec3 mn, Vec3 mx, int i) {
     };
 }
 
-Vec3 closestPointOnAabb(Vec3 p, Vec3 mn, Vec3 mx) {
-    return {
-        std::clamp(p.x, mn.x, mx.x),
-        std::clamp(p.y, mn.y, mx.y),
-        std::clamp(p.z, mn.z, mx.z)
-    };
-}
-
 } // namespace
 
 ChunkWorldBound makePlanetChunkBound(const PlanetChunkAddress& address,
@@ -90,6 +82,20 @@ ChunkWorldBound makePlanetChunkBound(const PlanetChunkAddress& address,
     bound.radius = 0.0f;
     for (int i = 0; i < 8; ++i)
         bound.radius = std::max(bound.radius, length(aabbCorner(bound.aabbMin, bound.aabbMax, i) - bound.center));
+
+    bound.prismCornerCount = 0;
+    for (int ir = 0; ir < 2 && bound.prismCornerCount < 8; ++ir) {
+        const int r = ir ? r1 : r0;
+        const float radius = referenceRadius + static_cast<float>(r - referenceRadial);
+        for (int iv = 0; iv < 2; ++iv) {
+            const int v = iv ? v1 : v0;
+            for (int iu = 0; iu < 2; ++iu) {
+                const int u = iu ? u1 : u0;
+                const Vec3 d = faceGridCornerDirection(address.face, u, v, faceResolution);
+                bound.prismCorners[bound.prismCornerCount++] = d * radius;
+            }
+        }
+    }
     return bound;
 }
 
@@ -174,15 +180,30 @@ bool pointHiddenByPlanetSphere(Vec3 eye, Vec3 point, float occluderRadius) {
 }
 
 bool aabbFullyBehindHorizon(Vec3 aabbMin, Vec3 aabbMax, Vec3 eye, float occluderRadius) {
-    if (occluderRadius <= 0.0f) return false;
-    if (length(eye) <= occluderRadius + 0.25f) return false;
-    const Vec3 closest = closestPointOnAabb(eye, aabbMin, aabbMax);
-    if (lengthSq(closest - eye) < 1.0e-4f) return false;
+    ChunkWorldBound bound{};
+    bound.valid = true;
+    bound.aabbMin = aabbMin;
+    bound.aabbMax = aabbMax;
+    bound.center = aabbCenter(aabbMin, aabbMax);
+    bound.prismCornerCount = 0;
+    return boundFullyBehindHorizon(bound, eye, occluderRadius);
+}
 
-    if (!pointHiddenByPlanetSphere(eye, aabbCenter(aabbMin, aabbMax), occluderRadius))
+bool boundFullyBehindHorizon(const ChunkWorldBound& bound, Vec3 eye, float occluderRadius) {
+    if (!bound.valid || occluderRadius <= 0.0f) return false;
+    if (length(eye) <= occluderRadius + 0.25f) return false;
+
+    if (!pointHiddenByPlanetSphere(eye, bound.center, occluderRadius))
         return false;
+    if (bound.prismCornerCount > 0) {
+        for (int i = 0; i < bound.prismCornerCount; ++i) {
+            if (!pointHiddenByPlanetSphere(eye, bound.prismCorners[i], occluderRadius))
+                return false;
+        }
+        return true;
+    }
     for (int i = 0; i < 8; ++i) {
-        if (!pointHiddenByPlanetSphere(eye, aabbCorner(aabbMin, aabbMax, i), occluderRadius))
+        if (!pointHiddenByPlanetSphere(eye, aabbCorner(bound.aabbMin, bound.aabbMax, i), occluderRadius))
             return false;
     }
     return true;
@@ -199,7 +220,7 @@ ChunkCullReason classifyChunkBound(const ChunkWorldBound& bound, const ChunkView
         }
     }
     if (view.enableHorizon && view.occluderRadius > 0.0f) {
-        if (aabbFullyBehindHorizon(bound.aabbMin, bound.aabbMax, view.eye, view.occluderRadius))
+        if (boundFullyBehindHorizon(bound, view.eye, view.occluderRadius))
             return ChunkCullReason::BehindHorizon;
     }
     return ChunkCullReason::Visible;

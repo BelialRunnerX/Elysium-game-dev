@@ -1,0 +1,40 @@
+Start testing: Sep 14 16:30 UTC
+----------------------------------------------------------
+1/2 Testing: elysium_headless
+1/2 Test: elysium_headless
+Command: "/workspace/build_headless/elysium_headless_tests"
+Directory: /workspace/build_headless
+"elysium_headless" start time: Sep 14 16:30 UTC
+Output:
+----------------------------------------------------------
+Elysium headless tests: PASS
+<end of output>
+Test time = 197.67 sec
+----------------------------------------------------------
+Test Passed.
+"elysium_headless" end time: Sep 14 16:34 UTC
+"elysium_headless" time elapsed: 00:03:17
+----------------------------------------------------------
+
+2/2 Testing: include_boundary
+2/2 Test: include_boundary
+Command: "/usr/bin/bash" "/workspace/scripts/check_include_boundaries.sh"
+Directory: /workspace/build_headless
+"include_boundary" start time: Sep 14 16:34 UTC
+Output:
+----------------------------------------------------------
+include-boundary check OK
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"include_boundary" end time: Sep 14 16:34 UTC
+"include_boundary" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 14 16:34 UTC
+
+architecture =   0.03 sec*proc
+
+headless =   0.03 sec*proc
+

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libelysium_core.a CMakeFiles/elysium_core.dir/src/core/JobSystem.cpp.o
+/usr/bin/ranlib libelysium_core.a

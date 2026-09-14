@@ -17,6 +17,11 @@ struct ChunkWorldBound {
     float radius{};
     Vec3 aabbMin{};
     Vec3 aabbMax{};
+    // Actual UVR prism corners (on the cube-sphere shells). Horizon tests
+    // these rather than cartesian AABB corners, which stick into empty sky
+    // around a spherical patch and would never reject the far face.
+    Vec3 prismCorners[8]{};
+    int prismCornerCount{};
     bool valid{};
 };
 
@@ -98,6 +103,7 @@ bool pointHiddenByPlanetSphere(Vec3 eye, Vec3 point, float occluderRadius);
 // Conservative: every AABB corner and the center must be hidden, and the
 // camera must sit outside both the occluder and the bound.
 bool aabbFullyBehindHorizon(Vec3 aabbMin, Vec3 aabbMax, Vec3 eye, float occluderRadius);
+bool boundFullyBehindHorizon(const ChunkWorldBound& bound, Vec3 eye, float occluderRadius);
 
 ChunkCullReason classifyChunkBound(const ChunkWorldBound& bound, const ChunkViewCamera& view);
 

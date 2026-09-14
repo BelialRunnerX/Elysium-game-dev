@@ -7,7 +7,7 @@
 | Item | Policy |
 |---|---|
 | **P0-24** | Perspective frustum vs padded AABB (sphere is a fast reject that contains the AABB). |
-| **P0-25** | Geometric horizon vs an **inner-shell** occluder (`referenceRadius − ReferenceRadial − 0.5`). A bound is `BehindHorizon` only when the center **and** all 8 AABB corners are hidden by a segment–sphere test. Camera-in-bound and camera-inside-occluder skip horizon. |
+| **P0-25** | Geometric horizon vs an **inner-shell** occluder (`referenceRadius − ReferenceRadial − 0.5`). A bound is `BehindHorizon` only when the center **and** all 8 **UVR prism corners** (on the cube-sphere shells) are hidden by a segment–sphere test. Cartesian AABB corners are not used here — they stick into empty sky around a spherical patch. Camera-in-bound and camera-inside-occluder skip horizon. |
 
 No `setView` ⇒ previous draw-all behaviour (headless tests, debug Full). `Game::drawSphericalSurface` supplies the play camera (75° vFOV, window aspect, raylib-like 0.01/1000 clip).
 
@@ -17,7 +17,7 @@ Orbital climate/cloud shells are a separate two-mesh path and are not chunk-cull
 
 - Bounds are a 3×3×3 UVR sample of the chunk prism (captures cube-sphere bulge) plus `kChunkBoundPad` (1.25 m) for micro/numeric slack. Field skirts pull inward.
 - Horizon uses the **inner voxel shell**, not mean surface radius, so limb hills cannot pop.
-- A limb-straddling AABB with any visible corner stays `Visible` even if the center is occluded.
+- A limb-straddling prism with any visible UVR corner stays `Visible` even if the center is occluded. Cartesian AABB-inside-camera is not used as a horizon skip (those AABBs are too loose on a cube-sphere).
 
 ## Measurable step
 

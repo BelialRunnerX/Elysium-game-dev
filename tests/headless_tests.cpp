@@ -1435,15 +1435,19 @@ void testChunkFrustumAndHorizonCull() {
     require(classifyChunkBound(plusZ, horizonOnly)==ChunkCullReason::Visible,
             "near-face chunk bound was horizon-culled");
 
-    // Conservative: BehindHorizon ⇒ every AABB corner is actually hidden.
-    require(aabbFullyBehindHorizon(minusZ.aabbMin, minusZ.aabbMax, eye, horizonOnly.occluderRadius),
-            "BehindHorizon classification drifted from the AABB corner oracle");
+    // Conservative: BehindHorizon ⇒ every UVR prism corner is actually hidden.
+    require(boundFullyBehindHorizon(minusZ, eye, horizonOnly.occluderRadius),
+            "BehindHorizon classification drifted from the prism-corner oracle");
 
-    PlanetSurface planet(0xC011ULL, PlanetClass::Temperate);
-    JobSystem jobs(2);
+    PlanetSurface planet(0x0B17A1ULL, PlanetClass::Temperate);
+    JobSystem jobs(SerialJobs);
     FakeGraphicsBackend fake;
     PlanetSurfaceRenderer renderer(jobs, fake);
-    settlePlanetRenderer(renderer, planet);
+    renderer.sync(planet);
+    for (int i=0;i<64 && (renderer.pendingJobs()>0 || renderer.dirtyChunks()>0);++i)
+        renderer.sync(planet);
+    require(renderer.pendingJobs()==0, "cull fixture serial jobs still pending after drain");
+    require(renderer.dirtyChunks()==0, "cull fixture remained dirty after serial drain");
     require(renderer.ready(), "cull fixture renderer failed to settle");
 
     const int uploadsBefore = fake.uploads;
@@ -1453,18 +1457,18 @@ void testChunkFrustumAndHorizonCull() {
             renderer.lastDrawnChunks()==PlanetSurface::ChunkCount,
             "draw without a view must still submit every published chunk");
 
-    const SurfaceCellAddress feetCell{CubeFace::PositiveZ,16,16,
-        planet.surfaceRadial(CubeFace::PositiveZ,16,16)};
+    const SurfaceCellAddress feetCell{CubeFace::PositiveZ,32,32,
+        planet.surfaceRadial(CubeFace::PositiveZ,32,32)};
     const Vec3 feet = planet.cellCenterPosition(feetCell);
     const Vec3 up = normalize(feet);
-    const Vec3 cam = feet + up * 1.62f;
+    const Vec3 eyePos = feet + up * 1.62f;
     const auto frame = planet.surfaceFrame(feet);
-    const int localSlot = testPlanetSlot(CubeFace::PositiveZ, 0, 0);
+    const int localSlot = testPlanetSlot(CubeFace::PositiveZ, 1, 1);
     const int farSlot = testPlanetSlot(CubeFace::NegativeZ, 0, 0);
 
     // Wide look-through-planet view: local chunk stays visible, far face is
     // inside the frustum but geometrically behind the horizon.
-    auto through = makePlanetSurfaceView(cam, up*-1.0f, frame.forward, 170.0f, 1.0f,
+    auto through = makePlanetSurfaceView(eyePos, up*-1.0f, frame.forward, 170.0f, 1.0f,
                                          planet.referenceRadius());
     renderer.setView(through);
     require(renderer.chunkCullReason(localSlot)==ChunkCullReason::Visible,
@@ -1480,7 +1484,7 @@ void testChunkFrustumAndHorizonCull() {
         else if (reasons[static_cast<std::size_t>(slot)]==ChunkCullReason::OutsideFrustum) ++fru;
         else ++hor;
     }
-    require(vis>=1 && hor>=1,
+    require(vis>=1 && hor>=1 && vis+fru+hor==PlanetSurface::ChunkCount,
             "look-through view did not produce both visible and horizon-culled chunks");
 
     const int drawsBefore = fake.draws;
@@ -1496,7 +1500,7 @@ void testChunkFrustumAndHorizonCull() {
 
     // Frustum-only: narrow look along +X hides most of the sphere, including
     // the back face which the wide-horizon pass had kept classified.
-    auto narrow = makePlanetSurfaceView(cam, frame.right, up, 18.0f, 1.0f,
+    auto narrow = makePlanetSurfaceView(eyePos, frame.right, up, 18.0f, 1.0f,
                                         planet.referenceRadius());
     narrow.enableHorizon = false;
     renderer.setView(narrow);
@@ -1522,7 +1526,11 @@ void testChunkFrustumAndHorizonCull() {
 
     // Streaming / hysteresis must be independent of the draw cull.
     renderer.setStreamingFocus(feet, 6, 9);
-    settlePlanetRenderer(renderer, planet);
+    renderer.sync(planet);
+    for (int i=0;i<64 && (renderer.pendingJobs()>0 || renderer.dirtyChunks()>0);++i)
+        renderer.sync(planet);
+    require(renderer.pendingJobs()==0, "cull fixture streaming jobs still pending after serial drain");
+    require(renderer.dirtyChunks()==0, "cull fixture streaming remained dirty after serial drain");
     require(renderer.fullDetailChunks()==6 && renderer.nearFieldChunks()==9,
             "view culling changed streaming LOD residency");
     renderer.setView(through);

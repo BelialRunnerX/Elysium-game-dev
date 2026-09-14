@@ -33,7 +33,7 @@ Honest inventory against the chunk-opt catalog. Source of truth is the code in `
 | Item | Status | Notes |
 |---|---|---|
 | P0-24 Frustum-cull chunk bounds | **Present** | Compact AABB + sphere per cube-sphere chunk; `PlanetSurfaceRenderer::draw` classifies before `drawMesh`. No view set ⇒ draw-all (debug / existing tests). Planar `WorldRenderer` still draws every mesh. |
-| P0-25 Planet-horizon culling | **Present** | Same pass. Conservative inner-shell occluder (`referenceRadius − ReferenceRadial − 0.5`); a bound is rejected only when center + 8 AABB corners are all hidden. Limb-straddling chunks stay visible (no pop). |
+| P0-25 Planet-horizon culling | **Present** | Same pass. Conservative inner-shell occluder (`referenceRadius − ReferenceRadial − 0.5`); a bound is rejected only when center + 8 UVR prism corners are all hidden. Limb-straddling chunks stay visible (no pop). |
 
 ## STREAMING / LOD
 

@@ -1,0 +1,1 @@
+/usr/bin/g++ CMakeFiles/elysium_headless_tests.dir/tests/headless_tests.cpp.o -o elysium_headless_tests  libelysium_render_core.a libelysium_world.a libelysium_core.a 
