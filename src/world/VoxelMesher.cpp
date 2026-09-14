@@ -92,6 +92,7 @@ struct MaskCell {
     bool active{};
 };
 
+// Generic 2D rectangle merger used by each face plane.
 template <class Emit>
 void greedyMask(std::vector<MaskCell>& mask, int width, int height, Emit&& emit) {
     for (int v = 0; v < height; ++v) {
@@ -131,7 +132,7 @@ bool macroFaceCandidate(const WorldSnapshot& world, int x, int y, int z, int nx,
     if (!blockProperties(type).solid) return false;
     const int qx = x + nx, qy = y + ny, qz = z + nz;
     if (!world.inBounds(qx,qy,qz)) return true;
-    if (world.isRefined(qx,qy,qz)) return false;
+    if (world.isRefined(qx,qy,qz)) return false; // emitted at micro boundary resolution
     if (blockProperties(world.get(qx,qy,qz)).solid) return false;
     return world.isExteriorAir(qx,qy,qz);
 }
@@ -174,6 +175,9 @@ int component(IVec3 v,int axis) {
     return axis==0?v.x:(axis==1?v.y:v.z);
 }
 
+// Four cells in the outside layer that touch a face vertex are sampled. This is
+// a stable, inexpensive voxel AO approximation: flat terrain remains bright,
+// while wall/floor intersections and chipped micro cavities darken locally.
 template <class SolidFn>
 float vertexAo(IVec3 p, Vec3 normal, SolidFn&& solid, bool& darkened) {
     const int n=dominantAxis(normal);
@@ -254,6 +258,8 @@ void emitRefinedCells(MeshBuilder& builder, const WorldSnapshot& world,
     }
 }
 
+// When an unrefined macro voxel borders a refined cell, the normal greedy face
+// cannot represent a 6.25 cm hole. Emit only the exposed sub-quads on that boundary.
 void emitMacroToRefinedBoundaries(MeshBuilder& builder, const WorldSnapshot& world,
                                   int x0, int y0, int z0, int x1, int y1, int z1) {
     constexpr int r = MicroBrick::Resolution;
@@ -294,6 +300,7 @@ CpuMeshData buildChunkMesh(const WorldSnapshot& world, int chunkX, int chunkY, i
     const int z1 = std::min(z0 + WorldSnapshot::ChunkSize, WorldSnapshot::Depth);
     if (x0 >= x1 || y0 >= y1 || z0 >= z1) return builder.finish();
 
+    // +/- X faces: mask axes are Z (u) and Y (v).
     std::vector<MaskCell> mask(static_cast<std::size_t>((z1-z0)*(y1-y0)));
     for (int x=x0;x<x1;++x) {
         for (int sign : {1,-1}) {
@@ -312,6 +319,7 @@ CpuMeshData buildChunkMesh(const WorldSnapshot& world, int chunkX, int chunkY, i
         }
     }
 
+    // +/- Y faces: mask axes are X (u) and Z (v).
     mask.assign(static_cast<std::size_t>((x1-x0)*(z1-z0)),{});
     for (int y=y0;y<y1;++y) {
         for (int sign : {1,-1}) {
@@ -330,6 +338,7 @@ CpuMeshData buildChunkMesh(const WorldSnapshot& world, int chunkX, int chunkY, i
         }
     }
 
+    // +/- Z faces: mask axes are X (u) and Y (v).
     mask.assign(static_cast<std::size_t>((x1-x0)*(y1-y0)),{});
     for (int z=z0;z<z1;++z) {
         for (int sign : {1,-1}) {
