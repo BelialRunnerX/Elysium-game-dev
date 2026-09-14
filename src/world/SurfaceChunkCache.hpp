@@ -3,6 +3,7 @@
 #include "core/JobSystem.hpp"
 #include "world/ChunkOccupancy.hpp"
 #include "world/ChunkVoxelSpans.hpp"
+#include "world/MicroBrick.hpp"
 #include "world/PlanetSurface.hpp"
 
 #include <array>
@@ -34,6 +35,10 @@ struct SurfaceChunkData {
     PlanetChunkAddress address{};
     std::uint64_t revision{};
     float referenceRadius{48.0f};
+    std::uint64_t seed{};
+    PlanetClass planetClass{PlanetClass::Temperate};
+    // Deterministic column heights for regenerable procedural micro.
+    std::array<std::uint8_t, PlanetSurface::FaceCount * PlanetSurface::FaceResolution * PlanetSurface::FaceResolution> generatedSurfaceRadials{};
     // Adaptive Homogeneous / RLE-column / Dense payload (P0-7/9/10). Logical
     // voxels match the prior dense HaloSize^3 layout: indexed [u+1,v+1,r+1].
     ChunkVoxelSpans voxels;
@@ -54,8 +59,17 @@ struct SurfaceChunkData {
     BlockType getWithHalo(int u, int v, int radial) const;
     SurfaceCellAddress worldAddress(int localU, int localV, int localRadial) const;
     bool isRefined(SurfaceCellAddress address) const;
+    bool hasMicroDetail(SurfaceCellAddress address) const;
     const MicroBrick* microBrick(SurfaceCellAddress address) const;
     BlockType microGet(SurfaceCellAddress address, int mu, int mr, int mv) const;
+    // Halo-local micro query: uses getWithHalo for macro baseline so cube-face
+    // seam neighbors (normalized onto another face) still see the packet's
+    // stored macro occupancy instead of defaulting to Air.
+    BlockType microGetLocal(int localU, int localV, int localRadial,
+                            int mu, int mr, int mv) const;
+    // Fill all 16^3 microcells for one halo-local macro (hoists column/slope once).
+    void sampleMicroBrickLocal(int localU, int localV, int localRadial,
+                               std::array<BlockType, MicroBrick::CellCount>& out) const;
     std::size_t estimatedBytes() const;
     void recomputeOccupancy();
 
@@ -63,6 +77,9 @@ struct SurfaceChunkData {
 
 private:
     static int haloIndex(int u, int v, int radial);
+    // Map a (possibly cross-face) world address back into this packet's local
+    // halo frame. Returns false when the cell is outside the one-cell halo.
+    bool localCoordsFor(SurfaceCellAddress address, int& localU, int& localV, int& localRadial) const;
 };
 
 struct SurfaceChunkCacheStats {
