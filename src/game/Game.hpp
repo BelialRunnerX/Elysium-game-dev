@@ -64,7 +64,9 @@ private:
     bool sphericalGrounded_{true};
     SurfaceCellAddress sphericalMiningCell_{};
     bool sphericalMiningValid_{};
+    // Per-system Empire standing; Alpha keys the active star system by galaxySeed_.
     SuspicionLedger suspicionLedger_{};
+    // Part 24 Ship pillar: repair-gated inter-planet transit (spherical authority).
     ShipTransit shipTransit_{};
     float favor_{};
     std::uint64_t saveGeneration_{};
@@ -72,15 +74,16 @@ private:
     SurfaceDefenseTelemetry surfaceDefenseTelemetry_{};
     SurfaceIndustrySystem surfaceIndustry_{};
     SurfaceIndustryTelemetry surfaceIndustryTelemetry_{};
+    // Claim filing + distinct beaconIntact / stable beacon id (world layer).
     RegistryBeaconAuthority registryBeacons_{galaxySeed_};
-    int toolTier_{0};
+    int toolTier_{0}; // EarlyMetallurgy::kImprovised
     BlockType selectedBlock_{BlockType::Dirt};
     bool travelMenu_{};
     bool craftingMenu_{};
     bool mapMenu_{};
     bool inventoryMenu_{};
-    int inventoryTab_{};
-    int inventorySelected_{};
+    int inventoryTab_{};       // 0=Equipment 1=Materials 2=Tools
+    int inventorySelected_{};  // 0..15 cell in active tab 4x4
     bool sculptMode_{};
     bool machineMode_{};
     bool portalMode_{};
