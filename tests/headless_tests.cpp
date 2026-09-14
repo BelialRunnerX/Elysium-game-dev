@@ -1202,6 +1202,161 @@ void testPlanetSurfaceMeshingAndRenderer() {
     require(fake.liveCount()==0 && fake.destroys==fake.uploads,"planet surface renderer leaked graphics resources");
 }
 
+void testLodHysteresisDoesNotFlipFlopInBand() {
+    constexpr int n = 4;
+    const float scoresLo[n] = {0.900f, 0.889f, 0.50f, 0.10f};
+    const float scoresHi[n] = {0.889f, 0.900f, 0.50f, 0.10f};
+    SurfaceRenderDetail hysteretic[n]{};
+    SurfaceRenderDetail tight[n]{};
+
+    LodHysteresisConfig cfg{};
+    cfg.highDetailBudget = 1;
+    cfg.nearFieldBudget = 1;
+
+    LodHysteresisConfig noBand = cfg;
+    noBand.fullExitBand = 0.0f;
+    noBand.nearExitBand = 0.0f;
+    noBand.rankSlack = 0;
+
+    assignStreamingLodDetails(scoresLo, nullptr, hysteretic, n, cfg);
+    assignStreamingLodDetails(scoresLo, nullptr, tight, n, noBand);
+    require(hysteretic[0]==SurfaceRenderDetail::Full && hysteretic[1]==SurfaceRenderDetail::FieldNear &&
+            hysteretic[2]==SurfaceRenderDetail::FieldFar,
+            "enter-only assignment did not honor Full/Near budgets");
+    require(tight[0]==SurfaceRenderDetail::Full && tight[1]==SurfaceRenderDetail::FieldNear,
+            "zero-band assignment disagreed on first enter");
+
+    int tightBoundaryFlips = 0;
+    int hystFullDemotes = 0;
+    SurfaceRenderDetail prevHyst[n];
+    SurfaceRenderDetail prevTight[n];
+    for (int i=0;i<n;++i) { prevHyst[i]=hysteretic[i]; prevTight[i]=tight[i]; }
+
+    for (int step=0; step<16; ++step) {
+        const float* scores = (step%2==0) ? scoresHi : scoresLo;
+        assignStreamingLodDetails(scores, prevHyst, hysteretic, n, cfg);
+        assignStreamingLodDetails(scores, prevTight, tight, n, noBand);
+        if (tight[0]!=prevTight[0] || tight[1]!=prevTight[1]) ++tightBoundaryFlips;
+        if (hysteretic[0]!=SurfaceRenderDetail::Full) ++hystFullDemotes;
+        for (int i=0;i<n;++i) { prevHyst[i]=hysteretic[i]; prevTight[i]=tight[i]; }
+    }
+
+    require(tightBoundaryFlips>=8,
+            "single-threshold ranking did not flip-flop across the Full/Near edge");
+    require(hystFullDemotes==0 && hysteretic[0]==SurfaceRenderDetail::Full,
+            "LOD hysteresis demoted Full while the score stayed inside the exit band");
+
+    // Near/Far band: 0 Full + 1 Near. Oscillate the nearest two around the Near cutoff.
+    const float nearLo[n] = {0.50f, 0.49f, 0.10f, 0.00f};
+    const float nearHi[n] = {0.49f, 0.50f, 0.10f, 0.00f};
+    LodHysteresisConfig nearCfg{};
+    nearCfg.highDetailBudget = 0;
+    nearCfg.nearFieldBudget = 1;
+    LodHysteresisConfig nearTight = nearCfg;
+    nearTight.nearExitBand = 0.0f;
+    nearTight.rankSlack = 0;
+    SurfaceRenderDetail nearHyst[n]{};
+    SurfaceRenderDetail nearZero[n]{};
+    assignStreamingLodDetails(nearLo, nullptr, nearHyst, n, nearCfg);
+    assignStreamingLodDetails(nearLo, nullptr, nearZero, n, nearTight);
+    require(nearHyst[0]==SurfaceRenderDetail::FieldNear && nearHyst[1]==SurfaceRenderDetail::FieldFar,
+            "enter-only Near assignment did not promote the nearest FieldFar candidate");
+    int nearTightFlips=0, nearDemotes=0;
+    for (int step=0; step<16; ++step) {
+        const float* scores = (step%2==0) ? nearHi : nearLo;
+        SurfaceRenderDetail prevH[n]; SurfaceRenderDetail prevZ[n];
+        for (int i=0;i<n;++i) { prevH[i]=nearHyst[i]; prevZ[i]=nearZero[i]; }
+        assignStreamingLodDetails(scores, prevH, nearHyst, n, nearCfg);
+        assignStreamingLodDetails(scores, prevZ, nearZero, n, nearTight);
+        if (nearZero[0]!=prevZ[0] || nearZero[1]!=prevZ[1]) ++nearTightFlips;
+        if (nearHyst[0]!=SurfaceRenderDetail::FieldNear) ++nearDemotes;
+    }
+    require(nearTightFlips>=8, "single-threshold ranking did not flip-flop across the Near/Far edge");
+    require(nearDemotes==0 && nearHyst[0]==SurfaceRenderDetail::FieldNear,
+            "LOD hysteresis demoted FieldNear while the score stayed inside the exit band");
+
+    // A move well outside the band must still demote (no sticky antipode).
+    const float far[n] = {0.10f, 0.99f, 0.50f, 0.40f};
+    assignStreamingLodDetails(far, hysteretic, hysteretic, n, cfg);
+    require(hysteretic[0]!=SurfaceRenderDetail::Full,
+            "hysteresis kept Full after the score left the exit band");
+    require(hysteretic[1]==SurfaceRenderDetail::Full,
+            "large focus move did not enter Full on the new nearest chunk");
+}
+
+int testPlanetSlot(CubeFace face, int cu, int cv, int cr=0) {
+    return cu + PlanetSurface::ChunksPerFaceAxis *
+           (cv + PlanetSurface::ChunksPerFaceAxis *
+           (cr + PlanetSurface::RadialChunks * static_cast<int>(face)));
+}
+
+Vec3 testChunkCenterDir(CubeFace face, int cu, int cv) {
+    const int u = cu * PlanetSurface::ChunkSize + PlanetSurface::ChunkSize/2;
+    const int v = cv * PlanetSurface::ChunkSize + PlanetSurface::ChunkSize/2;
+    return faceGridCellDirection(face,
+                                 std::clamp(u,0,PlanetSurface::FaceResolution-1),
+                                 std::clamp(v,0,PlanetSurface::FaceResolution-1),
+                                 PlanetSurface::FaceResolution);
+}
+
+void testStreamingLodHysteresisNoFlipFlop() {
+    PlanetSurface planet(0x10D29ULL, PlanetClass::Temperate);
+    JobSystem jobs(2);
+    FakeGraphicsBackend fake;
+    PlanetSurfaceRenderer renderer(jobs, fake);
+
+    const Vec3 d0 = testChunkCenterDir(CubeFace::PositiveZ, 0, 0);
+    const Vec3 d1 = testChunkCenterDir(CubeFace::PositiveZ, 1, 0);
+    const int slot0 = testPlanetSlot(CubeFace::PositiveZ, 0, 0);
+    const int slot1 = testPlanetSlot(CubeFace::PositiveZ, 1, 0);
+    const Vec3 mid = normalize(d0 + d1);
+    const Vec3 t0 = normalize(d0 - mid * dot(d0, mid));
+    const Vec3 t1 = normalize(d1 - mid * dot(d1, mid));
+    auto focusToward = [&](Vec3 tangent, float deg) {
+        const float r = deg * 3.14159265f / 180.0f;
+        return normalize(mid * std::cos(r) + tangent * std::sin(r)) * 48.0f;
+    };
+    // Foci must be >~1.8° apart so setStreamingFocus re-ranks, but the chunk-0
+    // score delta must stay inside kLodFullExitBand so a Schmitt trigger holds.
+    Vec3 focusA{};
+    Vec3 focusB{};
+    bool foundFoci = false;
+    for (float deg = 0.95f; deg <= 3.5f + 1e-4f; deg += 0.05f) {
+        const Vec3 a = focusToward(t0, deg);
+        const Vec3 b = focusToward(t1, deg);
+        const float dirty = dot(normalize(a), normalize(b));
+        const float dScore = std::abs(dot(d0, normalize(a)) - dot(d0, normalize(b)));
+        if (dirty < kLodFocusDirtyCosine && dScore < kLodFullExitBand) {
+            focusA = a;
+            focusB = b;
+            foundFoci = true;
+            break;
+        }
+    }
+    require(foundFoci, "could not place renderer foci past the dirty deadzone and inside the Full exit band");
+
+    renderer.setStreamingFocus(focusA, 1, 1);
+    renderer.sync(planet);
+    require(renderer.streamingTargetDetail(slot0)==SurfaceRenderDetail::Full,
+            "streaming renderer did not enter Full on the nearer boundary chunk");
+    require(renderer.streamingTargetDetail(slot1)!=SurfaceRenderDetail::Full,
+            "first streaming enter promoted both chunks at the Full threshold");
+
+    int demotes = 0;
+    for (int i=0;i<12;++i) {
+        renderer.setStreamingFocus((i%2==0) ? focusB : focusA, 1, 1);
+        renderer.sync(planet);
+        if (renderer.streamingTargetDetail(slot0)!=SurfaceRenderDetail::Full) ++demotes;
+    }
+    require(demotes==0,
+            "PlanetSurfaceRenderer LOD hysteresis demoted Full across the threshold band");
+
+    renderer.setStreamingFocus(d0 * -48.0f, 1, 1);
+    renderer.sync(planet);
+    require(renderer.streamingTargetDetail(slot0)!=SurfaceRenderDetail::Full,
+            "streaming hysteresis kept Full after an antipodal focus move");
+}
+
 void settleRenderer(WorldRenderer& renderer, const World& world) {
     renderer.sync(world); // establish target revisions and schedule initial work
     for (int i=0;i<500 && (renderer.pendingJobs()>0 || renderer.dirtyChunks()>0);++i) {
@@ -3906,6 +4061,8 @@ int main() {
         testSurfaceChunkCacheBudgetCancellationAndRebuild();
         testSurfaceChunkCacheRetainAndPriorityPreempt();
         testPlanetSurfaceMeshingAndRenderer();
+        testLodHysteresisDoesNotFlipFlopInBand();
+        testStreamingLodHysteresisNoFlipFlop();
         testChunkDirtyTrackingAndRendererIsolation();
         testAoAndMaterialRanges();
         testBasePowerAndSealedAtmosphere();
