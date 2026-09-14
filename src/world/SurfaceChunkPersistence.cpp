@@ -276,7 +276,7 @@ std::optional<SurfaceChunkRecord> parsePayload(std::string_view payload,std::str
                 o.inventory.push_back(stack);
             }
         }
-        if(type<0 || type>static_cast<int>(MachineType::ArcSmelter) || mf<0 || mf>=PlanetSurface::FaceCount) {error="machine enum out of range";return std::nullopt;}
+        if(type<0 || type>static_cast<int>(MachineType::Extractor) || mf<0 || mf>=PlanetSurface::FaceCount) {error="machine enum out of range";return std::nullopt;}
         o.type=static_cast<MachineType>(type); o.anchor.face=static_cast<CubeFace>(mf); o.enabled=enabled!=0;
         r.machines.push_back(o);
     }
