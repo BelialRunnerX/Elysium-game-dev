@@ -36,6 +36,13 @@ add_library(elysium_world STATIC
     src/world/PlanetSurfaceMesher.cpp
     src/world/VoxelMesher.cpp
     src/world/World.cpp
+    src/world/ChunkOccupancy.cpp
+    src/world/ChunkVoxelSpans.cpp
+    src/world/BiomeCatalog.cpp
+    src/world/EarlyMetallurgy.cpp
+    src/world/ProceduralMicro.cpp
+    src/world/RegistryBeaconClaim.cpp
+    src/world/SurvivalPressure.cpp
 )
 target_link_libraries(elysium_world PUBLIC elysium_core)
 target_include_directories(elysium_world PUBLIC src)
