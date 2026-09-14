@@ -28,6 +28,13 @@ Honest inventory against the chunk-opt catalog. Source of truth is the code in `
 | P0-12 Noise caching | **Present** | `SphericalNoiseBasis` memo by (seed, field label) |
 | P0-35 / P0-55 Retain while rebuild | **Present** | `SurfaceChunkCache` keeps last valid packet |
 
+## STREAMING / LOD
+
+| Item | Status | Notes |
+|---|---|---|
+| P0-28 Coherent spatial LOD | **Present** | Full / FieldNear / FieldFar + orbital shell. Owner: `PlanetSurfaceRenderer` streaming focus. `SurfaceChunkCache` rebuilds LOD0 packets only; it does not choose tier. |
+| P0-29 LOD hysteresis | **Present** | Enter/exit cosine bands (`kLodFullExitBand` / `kLodNearExitBand` = 0.03) + one-rank slack on renderer focus scores. Dirty-bit deadzone `kLodFocusDirtyCosine` = 0.9995 is not an LOD band. See `CHANGE_NOTE_CHUNK_OPT_LOD_HYSTERESIS.md`. |
+
 ## Tests
 
 - `testGreedyMeshingAndExteriorAir` — planar greedy + cavity cull
@@ -36,5 +43,7 @@ Honest inventory against the chunk-opt catalog. Source of truth is the code in `
 - `testCachedSphericalMeshingUsesHalo` — one-cell halo seam
 - `testBitmaskFaceCullAgreesWithSolidSolid` — bitmask vs prior scalar solid-solid on synthetic + planar + spherical/halo fixtures
 - `testChunkOccupancyExtremityAndAdaptiveRep` / `testChunkVoxelSpansAdaptiveIdentityAndNoiseBasisCache`
+- `testSurfaceChunkCacheRetainAndPriorityPreempt` / `testPlanetSurfaceMeshingAndRenderer` — retain, preempt, three-tier budgets
+- `testLodHysteresisDoesNotFlipFlopInBand` / `testStreamingLodHysteresisNoFlipFlop` — P0-29 enter/exit bands
 
-See `CHANGE_NOTE_CHUNK_OPT.md`, `CHANGE_NOTE_CHUNK_OPT_STORAGE.md`, `CHANGE_NOTE_CHUNK_OPT_MESH.md`, `CHANGE_NOTE_CHUNK_OPT_BITMASK.md`, `CHANGE_NOTE_CHUNK_OPT_MESH_CROSSBRICK.md`.
+See `CHANGE_NOTE_CHUNK_OPT.md`, `CHANGE_NOTE_CHUNK_OPT_STORAGE.md`, `CHANGE_NOTE_CHUNK_OPT_MESH.md`, `CHANGE_NOTE_CHUNK_OPT_BITMASK.md`, `CHANGE_NOTE_CHUNK_OPT_MESH_CROSSBRICK.md`, `CHANGE_NOTE_CHUNK_OPT_STREAM.md`, `CHANGE_NOTE_CHUNK_OPT_LOD_HYSTERESIS.md`.

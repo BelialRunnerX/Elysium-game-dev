@@ -68,6 +68,7 @@ void PlanetSurfaceRenderer::invalidate() {
     targetDetails_.fill(streaming_ ? SurfaceRenderDetail::FieldFar : SurfaceRenderDetail::Full);
     editInfluenceCounts_.fill(0);
     snapshotRevision_ = 0;
+    lodHysteresisArmed_ = false;
     detailTargetsDirty_ = true;
     rebuiltChunksLastSync_ = 0;
     quads_ = triangles_ = 0;
@@ -78,11 +79,16 @@ void PlanetSurfaceRenderer::setStreamingFocus(Vec3 planetLocalPosition, int high
     const Vec3 nextDir = lengthSq(planetLocalPosition) > 0.001f ? normalize(planetLocalPosition) : Vec3{0,0,1};
     highDetailBudget = std::clamp(highDetailBudget,0,PlanetSurface::ChunkCount);
     nearFieldBudget = std::clamp(nearFieldBudget,0,PlanetSurface::ChunkCount-highDetailBudget);
-    const bool changed = !streaming_ || highDetailBudget_ != highDetailBudget || nearFieldBudget_ != nearFieldBudget || dot(nextDir,focusDirection_) < 0.9995f;
+    const bool enteringStreaming = !streaming_;
+    const bool budgetChanged = streaming_ && (highDetailBudget_ != highDetailBudget || nearFieldBudget_ != nearFieldBudget);
+    const bool changed = enteringStreaming || budgetChanged || dot(nextDir,focusDirection_) < kLodFocusDirtyCosine;
     streaming_ = true;
     highDetailBudget_ = highDetailBudget;
     nearFieldBudget_ = nearFieldBudget;
     focusDirection_ = nextDir;
+    // Policy change (enter streaming / new budgets): next rank uses enter
+    // thresholds only so debug-Full residency and bubble resizes do not sticky.
+    if (enteringStreaming || budgetChanged) lodHysteresisArmed_ = false;
     if (changed) detailTargetsDirty_ = true;
 }
 
@@ -90,6 +96,7 @@ void PlanetSurfaceRenderer::setFullDetail() {
     orbitalShellOnly_=false;
     if (!streaming_ && !detailTargetsDirty_) return;
     streaming_ = false;
+    lodHysteresisArmed_ = false;
     detailTargetsDirty_ = true;
 }
 
@@ -104,26 +111,20 @@ void PlanetSurfaceRenderer::updateDetailTargets() {
 
     if (!streaming_) {
         targetDetails_.fill(SurfaceRenderDetail::Full);
+        lodHysteresisArmed_ = false;
         return;
     }
 
-    targetDetails_.fill(SurfaceRenderDetail::FieldFar);
-    std::vector<std::pair<float,int>> ranked;
-    ranked.reserve(PlanetSurface::ChunkCount);
+    std::array<float, PlanetSurface::ChunkCount> scores{};
     for (int slot=0;slot<PlanetSurface::ChunkCount;++slot) {
         const Vec3 d = chunkCenterDirection(slotAddress(slot));
-        ranked.emplace_back(dot(d,focusDirection_),slot);
+        scores[static_cast<std::size_t>(slot)] = dot(d,focusDirection_);
     }
-    std::sort(ranked.begin(),ranked.end(),[](const auto& a,const auto& b) {
-        if (a.first != b.first) return a.first > b.first;
-        return a.second < b.second;
-    });
-    const int fullCount = std::min(highDetailBudget_,static_cast<int>(ranked.size()));
-    for (int i=0;i<fullCount;++i)
-        targetDetails_[static_cast<std::size_t>(ranked[static_cast<std::size_t>(i)].second)] = SurfaceRenderDetail::Full;
-    const int nearEnd = std::min(fullCount+nearFieldBudget_,static_cast<int>(ranked.size()));
-    for (int i=fullCount;i<nearEnd;++i)
-        targetDetails_[static_cast<std::size_t>(ranked[static_cast<std::size_t>(i)].second)] = SurfaceRenderDetail::FieldNear;
+    const SurfaceRenderDetail* previous = lodHysteresisArmed_ ? targetDetails_.data() : nullptr;
+    assignStreamingLodDetails(scores.data(), previous, targetDetails_.data(),
+                              PlanetSurface::ChunkCount,
+                              LodHysteresisConfig{highDetailBudget_, nearFieldBudget_});
+    lodHysteresisArmed_ = true;
 
     // Player-authored distant meaning is now preserved inside the field mesher
     // with localized adaptive tiles. Whole chunks no longer need promotion just
@@ -230,6 +231,11 @@ int PlanetSurfaceRenderer::targetNearFieldChunks() const {
     int n=0;
     for (auto d:targetDetails_) if (d==SurfaceRenderDetail::FieldNear) ++n;
     return n;
+}
+
+SurfaceRenderDetail PlanetSurfaceRenderer::streamingTargetDetail(int slot) const {
+    if (slot < 0 || slot >= PlanetSurface::ChunkCount) return SurfaceRenderDetail::FieldFar;
+    return targetDetails_[static_cast<std::size_t>(slot)];
 }
 
 void PlanetSurfaceRenderer::processCompleted() {

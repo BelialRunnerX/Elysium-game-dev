@@ -2,6 +2,7 @@
 
 #include "core/JobSystem.hpp"
 #include "render/GraphicsBackend.hpp"
+#include "render/LodHysteresis.hpp"
 #include "world/PlanetSurface.hpp"
 #include "world/PlanetSurfaceMesher.hpp"
 #include "world/SurfaceChunkCache.hpp"
@@ -15,15 +16,10 @@
 
 namespace elysium {
 
-// Runtime representation tier for one cube-sphere surface chunk.
-// Field is a cheap direct-field silhouette packet; Full is the editable
-// macro/micro voxel packet. Only a bounded set of chunks around the player need
-// Full residency during surface play.
-enum class SurfaceRenderDetail : std::uint8_t { FieldFar = 0, FieldNear = 1, Full = 2 };
-
 // Chunked cube-sphere renderer with bounded high-detail residency. Workers build
 // CPU packets while all graphics publication stays on the owner thread. A local
-// focus promotes the nearest N chunks to LOD0 and demotes the rest to field LOD;
+// focus promotes the nearest N chunks to LOD0 and demotes the rest to field LOD
+// with P0-29 enter/exit hysteresis so threshold jitter does not chatter tiers;
 // orbital/debug views can request all chunks at full detail.
 class PlanetSurfaceRenderer {
 public:
@@ -58,6 +54,7 @@ public:
     int targetFullDetailChunks() const;
     int targetNearFieldChunks() const;
     bool streaming() const { return streaming_; }
+    SurfaceRenderDetail streamingTargetDetail(int slot) const;
     bool orbitalShellOnly() const { return orbitalShellOnly_; }
     int orbitalClimateQuads() const { return orbitalClimateQuads_; }
     int orbitalCloudQuads() const { return orbitalCloudQuads_; }
@@ -91,6 +88,7 @@ private:
     std::array<SurfaceRenderDetail, PlanetSurface::ChunkCount> targetDetails_{};
     std::uint64_t snapshotRevision_{};
     bool streaming_{};
+    bool lodHysteresisArmed_{};
     Vec3 focusDirection_{0,0,1};
     int highDetailBudget_{7};
     int nearFieldBudget_{9};
