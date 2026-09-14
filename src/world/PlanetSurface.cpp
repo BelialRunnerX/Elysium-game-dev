@@ -12,7 +12,7 @@
 #include <limits>
 #include <unordered_set>
 
-namespace elysrum {
+namespace elysium {
 namespace {
 
 int faceIndex(CubeFace face) {
