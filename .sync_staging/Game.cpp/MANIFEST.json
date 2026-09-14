@@ -1,0 +1,89 @@
+{
+  "path": "src/game/Game.cpp",
+  "part_count": 16,
+  "z64_total_len": 57648,
+  "output_len": 198287,
+  "output_sha256": "74f8723c8a20971ee0cef0d3fa6bf7de524488f8ad8edb3677a0471ee7e21331",
+  "parts": [
+    {
+      "i": 0,
+      "len": 3600,
+      "sha256": "b6ce3830e6f9177f51649bc081c7d57ad8fe28404c804e4daaf617fa92c5fb9e"
+    },
+    {
+      "i": 1,
+      "len": 3600,
+      "sha256": "7f8f06a9d77c4720f9a3c2ee96f8f1a3a9960b9d398b217a58087a8ab85bc1e9"
+    },
+    {
+      "i": 2,
+      "len": 3600,
+      "sha256": "daa34eece38b06c4b7f5ffd78251582aa9ec127d5b04e128e895dd9795fdcd70"
+    },
+    {
+      "i": 3,
+      "len": 3600,
+      "sha256": "27864f2b4b9b632205ce3d98d4931bc58625c18ee62486e7da0eebd0abe923a4"
+    },
+    {
+      "i": 4,
+      "len": 3600,
+      "sha256": "a08a4e9f484a46ec3aee769690987aab21668be9fe91e1b5773aebc1fa015892"
+    },
+    {
+      "i": 5,
+      "len": 3600,
+      "sha256": "81d750b5c3fd5cc6d433ead5c55108dd593359fb4e9a724a5d29472334bd5d1d"
+    },
+    {
+      "i": 6,
+      "len": 3600,
+      "sha256": "dadff92cf3a6d75a106a1673d2944bd3130955afdb9c8c57ba6cf9e2fee8d791"
+    },
+    {
+      "i": 7,
+      "len": 3600,
+      "sha256": "d61b34859adfd6125728209bd8266206bd15ad37f2451fed0dc782e503235bd0"
+    },
+    {
+      "i": 8,
+      "len": 3600,
+      "sha256": "72f9671786e3ee5808864a8d13b603a91f400dd5f6ac18d5f950405054f29a48"
+    },
+    {
+      "i": 9,
+      "len": 3600,
+      "sha256": "676d06301e0536fed1c25bf292a9ba68b31461f9fdd004c1acee3b30e8458255"
+    },
+    {
+      "i": 10,
+      "len": 3600,
+      "sha256": "ac93d5242cd4144e4d81b53020b3203dc7ef43a4e023a31f2e34db3c1f99c8bd"
+    },
+    {
+      "i": 11,
+      "len": 3600,
+      "sha256": "e27793c6b891ddb7171f56a1c1a0439344584e42f2fb9c19472971d6f0ae1777"
+    },
+    {
+      "i": 12,
+      "len": 3600,
+      "sha256": "a1b4b9c6dd5b63dfc345a9a2658681c0253d38b166a991e892cb205207f88aba"
+    },
+    {
+      "i": 13,
+      "len": 3600,
+      "sha256": "aeed445cdda2e6164760f5e43114e35c7dd975483e3c1920077a9403393b78a8"
+    },
+    {
+      "i": 14,
+      "len": 3600,
+      "sha256": "622048b9a12ef5894b7bd105be3d82e17a76fc8e0e4d4d9dfbfaad6fa172115c"
+    },
+    {
+      "i": 15,
+      "len": 3648,
+      "sha256": "510a0ebf7b0aface28d693b7ecd3c6bc41e86f9d58d49156d90836b350590356"
+    }
+  ]
+}
