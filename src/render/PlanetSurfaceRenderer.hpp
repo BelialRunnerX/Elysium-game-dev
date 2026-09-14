@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/JobSystem.hpp"
+#include "render/ChunkViewCull.hpp"
 #include "render/GraphicsBackend.hpp"
 #include "render/LodHysteresis.hpp"
 #include "world/PlanetSurface.hpp"
@@ -32,6 +33,17 @@ public:
     void draw() const;
     void drawOrbitalShell() const;
     void invalidate();
+
+    // P0-24/P0-25: compact AABB/sphere cull before drawMesh. Empty view keeps
+    // the previous draw-all behaviour so headless/debug paths stay complete.
+    void setView(const ChunkViewCamera& camera);
+    void clearView();
+    bool viewEnabled() const { return viewEnabled_; }
+    ChunkCullReason chunkCullReason(int slot) const;
+    ChunkWorldBound chunkBound(int slot) const;
+    int lastDrawnChunks() const { return lastDrawnChunks_; }
+    int lastCulledFrustum() const { return lastCulledFrustum_; }
+    int lastCulledHorizon() const { return lastCulledHorizon_; }
 
     // Promote only the nearest highDetailBudget chunks to full editable detail.
     // The remaining chunks retain cheap field proxies so planet silhouette and
@@ -94,6 +106,14 @@ private:
     int nearFieldBudget_{9};
     std::array<int, PlanetSurface::ChunkCount> editInfluenceCounts_{};
     bool detailTargetsDirty_{true};
+    bool viewEnabled_{};
+    ChunkViewCamera view_{};
+    std::array<ChunkWorldBound, PlanetSurface::ChunkCount> chunkBounds_{};
+    float boundReferenceRadius_{};
+    bool boundsValid_{};
+    mutable int lastDrawnChunks_{};
+    mutable int lastCulledFrustum_{};
+    mutable int lastCulledHorizon_{};
     int quads_{};
     int triangles_{};
     int rebuiltChunksLastSync_{};
@@ -117,6 +137,7 @@ private:
     void recalcStats();
     void ensureOrbitalShell(const PlanetSurface& planet);
     void updateCpuResidency(const PlanetSurface& planet);
+    void refreshChunkBounds(float referenceRadius);
 };
 
 } // namespace elysium

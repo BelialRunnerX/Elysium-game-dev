@@ -1,6 +1,6 @@
 # CHUNK_OPT_GAP — chunk occupancy / meshing catalog (v0.20)
 
-Honest inventory against the chunk-opt catalog. Source of truth is the code in `src/world/` plus headless tests, not older PDFs.
+Honest inventory against the chunk-opt catalog. Source of truth is the code in `src/world/` / `src/render/` plus headless tests, not older PDFs.
 
 ---
 
@@ -28,6 +28,13 @@ Honest inventory against the chunk-opt catalog. Source of truth is the code in `
 | P0-12 Noise caching | **Present** | `SphericalNoiseBasis` memo by (seed, field label) |
 | P0-35 / P0-55 Retain while rebuild | **Present** | `SurfaceChunkCache` keeps last valid packet |
 
+## DRAW / CULL
+
+| Item | Status | Notes |
+|---|---|---|
+| P0-24 Frustum-cull chunk bounds | **Present** | Compact AABB + sphere per cube-sphere chunk; `PlanetSurfaceRenderer::draw` classifies before `drawMesh`. No view set ⇒ draw-all (debug / existing tests). Planar `WorldRenderer` still draws every mesh. |
+| P0-25 Planet-horizon culling | **Present** | Same pass. Conservative inner-shell occluder (`referenceRadius − ReferenceRadial − 0.5`); a bound is rejected only when center + 8 AABB corners are all hidden. Limb-straddling chunks stay visible (no pop). |
+
 ## STREAMING / LOD
 
 | Item | Status | Notes |
@@ -45,5 +52,6 @@ Honest inventory against the chunk-opt catalog. Source of truth is the code in `
 - `testChunkOccupancyExtremityAndAdaptiveRep` / `testChunkVoxelSpansAdaptiveIdentityAndNoiseBasisCache`
 - `testSurfaceChunkCacheRetainAndPriorityPreempt` / `testPlanetSurfaceMeshingAndRenderer` — retain, preempt, three-tier budgets
 - `testLodHysteresisDoesNotFlipFlopInBand` / `testStreamingLodHysteresisNoFlipFlop` — P0-29 enter/exit bands
+- `testChunkFrustumAndHorizonCull` — P0-24 frustum vs P0-25 horizon; draw-list matches classified sets; retain GPU / LOD residency
 
-See `CHANGE_NOTE_CHUNK_OPT.md`, `CHANGE_NOTE_CHUNK_OPT_STORAGE.md`, `CHANGE_NOTE_CHUNK_OPT_MESH.md`, `CHANGE_NOTE_CHUNK_OPT_BITMASK.md`, `CHANGE_NOTE_CHUNK_OPT_MESH_CROSSBRICK.md`, `CHANGE_NOTE_CHUNK_OPT_STREAM.md`, `CHANGE_NOTE_CHUNK_OPT_LOD_HYSTERESIS.md`.
+See `CHANGE_NOTE_CHUNK_OPT.md`, `CHANGE_NOTE_CHUNK_OPT_STORAGE.md`, `CHANGE_NOTE_CHUNK_OPT_MESH.md`, `CHANGE_NOTE_CHUNK_OPT_BITMASK.md`, `CHANGE_NOTE_CHUNK_OPT_MESH_CROSSBRICK.md`, `CHANGE_NOTE_CHUNK_OPT_STREAM.md`, `CHANGE_NOTE_CHUNK_OPT_LOD_HYSTERESIS.md`, `CHANGE_NOTE_CHUNK_OPT_CULL.md`.

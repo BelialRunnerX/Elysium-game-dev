@@ -72,6 +72,9 @@ void PlanetSurfaceRenderer::invalidate() {
     detailTargetsDirty_ = true;
     rebuiltChunksLastSync_ = 0;
     quads_ = triangles_ = 0;
+    boundsValid_ = false;
+    boundReferenceRadius_ = 0.0f;
+    lastDrawnChunks_ = lastCulledFrustum_ = lastCulledHorizon_ = 0;
 }
 
 void PlanetSurfaceRenderer::setStreamingFocus(Vec3 planetLocalPosition, int highDetailBudget, int nearFieldBudget) {
@@ -103,6 +106,41 @@ void PlanetSurfaceRenderer::setFullDetail() {
 
 void PlanetSurfaceRenderer::setOrbitalShellOnly() {
     orbitalShellOnly_=true;
+}
+
+void PlanetSurfaceRenderer::setView(const ChunkViewCamera& camera) {
+    view_ = camera;
+    viewEnabled_ = true;
+}
+
+void PlanetSurfaceRenderer::clearView() {
+    viewEnabled_ = false;
+    view_ = ChunkViewCamera{};
+}
+
+void PlanetSurfaceRenderer::refreshChunkBounds(float referenceRadius) {
+    if (boundsValid_ && std::abs(boundReferenceRadius_ - referenceRadius) < 0.0001f) return;
+    boundReferenceRadius_ = referenceRadius;
+    for (int slot = 0; slot < PlanetSurface::ChunkCount; ++slot) {
+        chunkBounds_[static_cast<std::size_t>(slot)] = makePlanetChunkBound(
+            slotAddress(slot),
+            referenceRadius,
+            PlanetSurface::FaceResolution,
+            PlanetSurface::ChunkSize,
+            PlanetSurface::ReferenceRadial);
+    }
+    boundsValid_ = true;
+}
+
+ChunkCullReason PlanetSurfaceRenderer::chunkCullReason(int slot) const {
+    if (slot < 0 || slot >= PlanetSurface::ChunkCount) return ChunkCullReason::Visible;
+    if (!viewEnabled_) return ChunkCullReason::Visible;
+    return classifyChunkBound(chunkBounds_[static_cast<std::size_t>(slot)], view_);
+}
+
+ChunkWorldBound PlanetSurfaceRenderer::chunkBound(int slot) const {
+    if (slot < 0 || slot >= PlanetSurface::ChunkCount) return {};
+    return chunkBounds_[static_cast<std::size_t>(slot)];
 }
 
 void PlanetSurfaceRenderer::updateDetailTargets() {
@@ -147,6 +185,7 @@ void PlanetSurfaceRenderer::updateTargets(const PlanetSurface& planet) {
 
 void PlanetSurfaceRenderer::sync(const PlanetSurface& planet) {
     rebuiltChunksLastSync_ = 0;
+    refreshChunkBounds(planet.referenceRadius());
     updateTargets(planet);
     updateCpuResidency(planet);
     if (orbitalShellOnly_) {
@@ -160,7 +199,25 @@ void PlanetSurfaceRenderer::sync(const PlanetSurface& planet) {
 }
 
 void PlanetSurfaceRenderer::draw() const {
-    for (const auto& c : chunks_) if (c.handle) graphics_.drawMesh(c.handle);
+    lastDrawnChunks_ = lastCulledFrustum_ = lastCulledHorizon_ = 0;
+    for (int slot = 0; slot < PlanetSurface::ChunkCount; ++slot) {
+        const auto& c = chunks_[static_cast<std::size_t>(slot)];
+        if (!c.handle) continue;
+        if (viewEnabled_) {
+            const ChunkCullReason reason =
+                classifyChunkBound(chunkBounds_[static_cast<std::size_t>(slot)], view_);
+            if (reason == ChunkCullReason::OutsideFrustum) {
+                ++lastCulledFrustum_;
+                continue;
+            }
+            if (reason == ChunkCullReason::BehindHorizon) {
+                ++lastCulledHorizon_;
+                continue;
+            }
+        }
+        graphics_.drawMesh(c.handle);
+        ++lastDrawnChunks_;
+    }
 }
 
 void PlanetSurfaceRenderer::drawOrbitalShell() const {
