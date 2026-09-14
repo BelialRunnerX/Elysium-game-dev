@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Math.hpp"
 #include "world/Block.hpp"
 #include "world/PlanetTypes.hpp"
 
@@ -99,5 +100,8 @@ std::size_t biomeCountFor(PlanetClass planetClass);
 
 // Representative biome for HUD / PlanetEnvironment.biome continuity.
 BiomeId defaultBiomeFor(PlanetClass planetClass);
+
+// Deterministic direction-space biome sample (cube-sphere seam-safe).
+BiomeId sampleBiome(std::uint64_t seed, PlanetClass planetClass, Vec3 direction);
 
 } // namespace elysium

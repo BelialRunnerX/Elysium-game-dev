@@ -28,6 +28,8 @@ public:
     void set(int x, int y, int z, BlockType type);
     BlockType getIndex(int index) const;
     void setIndex(int index, BlockType type);
+    // True when this micro index is an explicit player/saved override (not baseline fill).
+    bool hasOverride(int index) const;
 
     std::vector<std::pair<std::uint16_t, BlockType>> overrides() const;
 

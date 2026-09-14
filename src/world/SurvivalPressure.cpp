@@ -26,6 +26,7 @@ SurvivalDecision evaluateSurvivalPressure(const SurvivalMeters& meters,
                                           const SurvivalRateTable& /*rates*/) {
     SurvivalDecision d{};
 
+    // Atmosphere: vacuum/drain pressure and suit O2 level.
     if (context.effectiveOxygenDrainPerSecond > 0.0f) {
         d.atmosphere = SurvivalUrgency::Advise;
         if (meters.oxygen < 40.0f) d.atmosphere = SurvivalUrgency::Urgent;
@@ -34,16 +35,19 @@ SurvivalDecision evaluateSurvivalPressure(const SurvivalMeters& meters,
     if (meters.oxygen <= 0.0f) {
         d.atmosphere = SurvivalUrgency::Critical;
     }
+    // Sealed refill (negative drain) with healthy O2 → no atmosphere decision.
     if (context.effectiveOxygenDrainPerSecond < 0.0f && meters.oxygen > 40.0f) {
         d.atmosphere = SurvivalUrgency::None;
     }
 
+    // Shelter: Scorched / local hazard.
     if (context.hazardDamagePerSecond > 0.0f) {
         d.shelter = SurvivalUrgency::Advise;
         if (meters.health < 50.0f) d.shelter = SurvivalUrgency::Urgent;
         if (meters.health < 25.0f) d.shelter = SurvivalUrgency::Critical;
     }
 
+    // Energy: sprint budget. Depleted suit energy blocks sprint (ECS gate 0.5).
     if (meters.energy <= 0.5f) {
         d.energy = SurvivalUrgency::Critical;
     } else if (meters.energy < 15.0f) {
@@ -52,6 +56,7 @@ SurvivalDecision evaluateSurvivalPressure(const SurvivalMeters& meters,
         d.energy = SurvivalUrgency::Advise;
     }
 
+    // Food / hunger.
     if (meters.hunger <= 0.0f) {
         d.food = SurvivalUrgency::Critical;
     } else if (meters.hunger < 20.0f) {
