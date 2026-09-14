@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <iosfwd>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -150,5 +152,42 @@ private:
     void completeWaveIfEmpty();
     void failAction();
 };
+
+// ---------------------------------------------------------------------------
+// Campaign-save append-only embed (ELYSIUM_SAVE schema 8 — no v9 bump).
+// Emits/reads `siege_count` + per-planet `siege <i>` + ELYSIUM_SURFACE_SIEGE 1
+// payloads before END. Stable IDs only; no entt::entity. Owned by Empire/siege
+// lane so SAVE vertical-slice work can leave this section alone.
+// ---------------------------------------------------------------------------
+
+inline bool campaignSiegeEmbedEligible(const SurfaceSiegeState& state) {
+    // Skip pure idle directors (phase Idle + actionId 0). Persist all other
+    // phases including Cleared/Failed terminal outcomes.
+    return !(state.phase == RegisterActionPhase::Idle && state.actionId == 0);
+}
+
+inline bool campaignSiegeEmbedEligible(const SurfaceSiegeDirector& director) {
+    return campaignSiegeEmbedEligible(director.state());
+}
+
+// Append `siege_count` / `siege` section for directors[0..planetCount).
+// Order is ascending planetIndex. Idle directors are omitted.
+void appendCampaignSiegeEmbed(std::ostream& out,
+                              const SurfaceSiegeDirector* const* directors,
+                              int planetCount);
+
+// After the caller has consumed the tag `siege_count`, restore N planet blobs
+// into directors[planetIndex]. Directors not mentioned stay unchanged (idle
+// after a fresh initWorlds is correct for absent slots).
+bool restoreCampaignSiegeEmbed(std::istream& in,
+                               std::size_t siegeCount,
+                               SurfaceSiegeDirector* const* directors,
+                               int planetCount,
+                               std::string* error = nullptr);
+
+// Known WaveActive-without-ECS limitation: after campaign restore + clearEnemies,
+// drop missing stable IDs so the director advances per existing reconcile rules
+// rather than changing the siege codec.
+void reconcileCampaignSiegeAfterRestore(SurfaceSiegeDirector& director);
 
 } // namespace elysium
