@@ -1,2 +1,0 @@
-/usr/bin/ar qc libelysium_render_core.a CMakeFiles/elysium_render_core.dir/src/render/WorldRenderer.cpp.o CMakeFiles/elysium_render_core.dir/src/render/PlanetSurfaceRenderer.cpp.o CMakeFiles/elysium_render_core.dir/src/render/ChunkViewCull.cpp.o
-/usr/bin/ranlib libelysium_render_core.a
