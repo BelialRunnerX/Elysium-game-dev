@@ -1310,16 +1310,30 @@ void testStreamingLodHysteresisNoFlipFlop() {
     const int slot0 = testPlanetSlot(CubeFace::PositiveZ, 0, 0);
     const int slot1 = testPlanetSlot(CubeFace::PositiveZ, 1, 0);
     const Vec3 mid = normalize(d0 + d1);
-    auto nudge = [&](float toward0) {
-        return normalize(mid * 8.0f + d0 * toward0 + d1 * (-toward0)) * 48.0f;
+    const Vec3 t0 = normalize(d0 - mid * dot(d0, mid));
+    const Vec3 t1 = normalize(d1 - mid * dot(d1, mid));
+    auto focusToward = [&](Vec3 tangent, float deg) {
+        const float r = deg * 3.14159265f / 180.0f;
+        return normalize(mid * std::cos(r) + tangent * std::sin(r)) * 48.0f;
     };
-
-    const Vec3 focusA = nudge(1.0f);
-    const Vec3 focusB = nudge(-1.0f);
-    require(dot(normalize(focusA), normalize(focusB)) < kLodFocusDirtyCosine,
-            "renderer hysteresis fixture foci are inside the dirty-bit deadzone");
-    require(std::abs(dot(d0, normalize(focusA)) - dot(d0, normalize(focusB))) < kLodFullExitBand,
-            "renderer hysteresis fixture is not an in-band oscillation for chunk 0");
+    // Foci must be >~1.8° apart so setStreamingFocus re-ranks, but the chunk-0
+    // score delta must stay inside kLodFullExitBand so a Schmitt trigger holds.
+    Vec3 focusA{};
+    Vec3 focusB{};
+    bool foundFoci = false;
+    for (float deg = 0.95f; deg <= 3.5f + 1e-4f; deg += 0.05f) {
+        const Vec3 a = focusToward(t0, deg);
+        const Vec3 b = focusToward(t1, deg);
+        const float dirty = dot(normalize(a), normalize(b));
+        const float dScore = std::abs(dot(d0, normalize(a)) - dot(d0, normalize(b)));
+        if (dirty < kLodFocusDirtyCosine && dScore < kLodFullExitBand) {
+            focusA = a;
+            focusB = b;
+            foundFoci = true;
+            break;
+        }
+    }
+    require(foundFoci, "could not place renderer foci past the dirty deadzone and inside the Full exit band");
 
     renderer.setStreamingFocus(focusA, 1, 1);
     renderer.sync(planet);
