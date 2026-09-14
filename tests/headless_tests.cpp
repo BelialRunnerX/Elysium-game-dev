@@ -3507,6 +3507,39 @@ void testSphericalMacroAndMicroGreedyMeshing() {
             "refined MicroBrick emitted no additional micro geometry");
     require(deltaMicro <= 1536 + 24,
             "MicroBrick greedy did not reduce micro face count enough");
+
+    // Cross-brick micro merge (P0-20 remainder): a 2x2 pad of full-stone
+    // MicroBricks floating in air (offset from the prism so side faces stay
+    // exposed). Within-brick-only greedy emits 16 outer quads (4 per R±,
+    // 2 per side). Cross-brick merge collapses each AABB face to one
+    // rectangle (6), matching material+AO corner policy.
+    const int crossBefore = microMesh.microQuads;
+    const int padU = u0 + 6, padV = v0 + 6, padR = base + 1;
+    require(padU + 1 < PlanetSurface::ChunkSize && padV + 1 < PlanetSurface::ChunkSize,
+            "cross-brick pad escaped chunk U/V");
+    require(padR < PlanetSurface::RadialLayers, "cross-brick pad escaped radial bounds");
+    constexpr int kPad = 2;
+    for (int dv = 0; dv < kPad; ++dv)
+        for (int du = 0; du < kPad; ++du) {
+            const SurfaceCellAddress cell{face, padU + du, padV + dv, padR};
+            for (int mr = 0; mr < MicroBrick::Resolution; ++mr)
+                for (int mv = 0; mv < MicroBrick::Resolution; ++mv)
+                    for (int mu = 0; mu < MicroBrick::Resolution; ++mu)
+                        planet.setMicro(cell, mu, mr, mv, BlockType::Stone);
+            require(planet.isRefined(cell), "cross-brick pad cell was not refined");
+        }
+    const auto data3 = settle();
+    const auto crossCached = buildPlanetSurfaceChunkMesh(*data3);
+    const auto crossSnap = buildPlanetSurfaceChunkMesh(planet.snapshot(), addr);
+    require(crossCached.microQuads == crossSnap.microQuads,
+            "cached vs snapshot cross-brick micro topology diverged");
+    const int deltaCross = crossCached.microQuads - crossBefore;
+    require(deltaCross >= 6,
+            "cross-brick MicroBrick pad emitted no additional micro geometry");
+    require(deltaCross < 16,
+            "cross-brick micro greedy did not merge adjacent refined bricks");
+    require(deltaCross <= 8,
+            "cross-brick micro merge left too many quads on a flat 2x2 pad");
 }
 
 void testSphericalMeshWorkerDeterminismAfterGreedy() {

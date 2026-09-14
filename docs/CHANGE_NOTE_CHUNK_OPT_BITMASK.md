@@ -6,7 +6,7 @@
 - Applies to:
   - Planar `VoxelMesher` macro greedy (also keeps the exterior-air / OOB emit rule).
   - Spherical `PlanetSurfaceMesher` LOD0 macro greedy (snapshot + cached halo packet).
-  - Within-brick MicroBrick greedy (halo bit for the neighboring macro / brick).
+  - MicroBrick greedy fill (halo bit for the neighboring macro / brick; stitched across adjacent refined bricks in one face chunk).
 - **Greedy merge (P0-17/18/19) is unchanged.** Bitmasks only replace the per-cell neighbor solidity test that fills the greedy mask. Visible topology matches the prior scalar cull for the same voxels.
 - Halo one-cell contract is the extra bit on each end of the word: cube-face wraps, mantle (`radial < 0` → Stone), and sky (`radial >= RadialLayers` → Air) stay in the packed column.
 
@@ -25,7 +25,7 @@ Bitwise form (`bit i` = local `i - halo`):
 
 ## Deferred / Partial
 
-- Cross-brick micro merge (P0-20 remainder) is still not done; only the solid-solid test inside a densified brick (+ one-cell neighbor) is bitwise.
+- Cross-chunk / cube-face (cross-macro) micro merge is still not done; within-chunk cross-brick merge uses the same per-brick bitwise solid-solid test.
 - Binary greedy meshing (merging via bit operations instead of `GreedyMaskCell`) is out of scope; rectangle growth is the existing 2D greedy.
 
 ## Files touched
