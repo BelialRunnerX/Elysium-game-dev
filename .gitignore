@@ -1,11 +1,3 @@
-# Local CMake trees (never commit compiler outputs)
+# Local CMake trees
 /build/
 /build_*/
-/cmake-build-*/
-CMakeCache.txt
-CMakeFiles/
-CTestTestfile.cmake
-cmake_install.cmake
-Testing/
-*.a
-elysium_headless_tests
