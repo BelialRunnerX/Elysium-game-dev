@@ -2836,9 +2836,17 @@ void Game::drawSphericalSurface() {
     camera_.up=rv(up);
     camera_.fovy=75.0f;
 
+    const int sw = std::max(1, GetScreenWidth());
+    const int sh = std::max(1, GetScreenHeight());
+    planetRenderer_.setView(makePlanetSurfaceView(
+        cp, cf, up, camera_.fovy,
+        static_cast<float>(sw) / static_cast<float>(sh),
+        planetSurface().referenceRadius(),
+        PlanetSurface::ReferenceRadial));
+
     BeginDrawing();
     ClearBackground(rc(env.skyColor));
-    drawHorizonSkyGradient(GetScreenWidth(), GetScreenHeight(), env.skyColor, env.horizonColor);
+    drawHorizonSkyGradient(sw, sh, env.skyColor, env.horizonColor);
     BeginMode3D(camera_);
     planetRenderer_.draw();
     drawSurfaceShipTerminal3D();

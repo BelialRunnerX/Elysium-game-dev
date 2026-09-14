@@ -52,6 +52,7 @@ target_include_directories(elysium_world PUBLIC src)
 add_library(elysium_render_core STATIC
     src/render/WorldRenderer.cpp
     src/render/PlanetSurfaceRenderer.cpp
+    src/render/ChunkViewCull.cpp
 )
 target_link_libraries(elysium_render_core PUBLIC elysium_world elysium_core)
 target_include_directories(elysium_render_core PUBLIC src)

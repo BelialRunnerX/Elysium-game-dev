@@ -30,6 +30,7 @@
 #include "render/GraphicsBackend.hpp"
 #include "render/WorldRenderer.hpp"
 #include "render/PlanetSurfaceRenderer.hpp"
+#include "render/ChunkViewCull.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -1355,6 +1356,189 @@ void testStreamingLodHysteresisNoFlipFlop() {
     renderer.sync(planet);
     require(renderer.streamingTargetDetail(slot0)!=SurfaceRenderDetail::Full,
             "streaming hysteresis kept Full after an antipodal focus move");
+}
+
+void testChunkFrustumAndHorizonCull() {
+    // Isolated frustum: camera at origin looking +Z, 90° square.
+    ChunkViewCamera cam{};
+    cam.eye = {0,0,0};
+    cam.forward = {0,0,1};
+    cam.up = {0,1,0};
+    cam.fovyDegrees = 90.0f;
+    cam.aspect = 1.0f;
+    cam.nearPlane = 0.1f;
+    cam.farPlane = 100.0f;
+    cam.enableHorizon = false;
+    const Frustum frustum = makePerspectiveFrustum(cam);
+
+    require(sphereIntersectsFrustum({0,0,10}, 1.0f, frustum),
+            "sphere on the look axis was frustum-culled");
+    require(!sphereIntersectsFrustum({0,0,-10}, 1.0f, frustum),
+            "sphere behind the camera was kept");
+    require(!sphereIntersectsFrustum({50,0,10}, 1.0f, frustum),
+            "sphere well outside the right plane was kept");
+    require(aabbIntersectsFrustum({-1,-1,9},{1,1,11}, frustum),
+            "AABB on the look axis was frustum-culled");
+    require(!aabbIntersectsFrustum({-1,-1,-11},{1,1,-9}, frustum),
+            "AABB behind the camera was kept");
+
+    ChunkWorldBound ahead{};
+    ahead.valid = true;
+    ahead.center = {0,0,10};
+    ahead.radius = 1.5f;
+    ahead.aabbMin = {-1,-1,9};
+    ahead.aabbMax = {1,1,11};
+    require(classifyChunkBound(ahead, cam)==ChunkCullReason::Visible,
+            "look-axis bound classified as culled");
+
+    ChunkWorldBound behind = ahead;
+    behind.center = {0,0,-10};
+    behind.aabbMin = {-1,-1,-11};
+    behind.aabbMax = {1,1,-9};
+    require(classifyChunkBound(behind, cam)==ChunkCullReason::OutsideFrustum,
+            "behind-camera bound was not OutsideFrustum");
+
+    // Isolated horizon: inner-shell occluder, camera above +Z.
+    const Vec3 eye{0,0,50};
+    const float occ = 32.0f;
+    require(pointHiddenByPlanetSphere(eye, {0,0,-48}, occ),
+            "antipode was not hidden by the planet sphere");
+    require(!pointHiddenByPlanetSphere(eye, {0,0,48}, occ),
+            "near-side surface point was hidden by the planet sphere");
+    require(aabbFullyBehindHorizon({-8,-8,-56},{8,8,-40}, eye, occ),
+            "far-side AABB was not BehindHorizon");
+    require(!aabbFullyBehindHorizon({-8,-8,40},{8,8,56}, eye, occ),
+            "near-side AABB was BehindHorizon");
+
+    const float radius = 48.0f;
+    const auto plusZ = makePlanetChunkBound({CubeFace::PositiveZ,0,0,0}, radius,
+                                            PlanetSurface::FaceResolution,
+                                            PlanetSurface::ChunkSize,
+                                            PlanetSurface::ReferenceRadial);
+    const auto minusZ = makePlanetChunkBound({CubeFace::NegativeZ,0,0,0}, radius,
+                                             PlanetSurface::FaceResolution,
+                                             PlanetSurface::ChunkSize,
+                                             PlanetSurface::ReferenceRadial);
+    require(plusZ.valid && minusZ.valid && plusZ.radius>1.0f && minusZ.radius>1.0f,
+            "cube-sphere chunk bounds were empty");
+    const Vec3 plusCell = faceGridCellDirection(CubeFace::PositiveZ, 8, 8,
+                                                PlanetSurface::FaceResolution) * radius;
+    require(chunkBoundContains(plusZ, plusCell) || length(plusCell - plusZ.center) <= plusZ.radius,
+            "PositiveZ chunk bound missed a cell inside the chunk");
+
+    ChunkViewCamera horizonOnly = makePlanetSurfaceView(eye, {0,0,-1}, {0,1,0},
+                                                        170.0f, 1.0f, radius);
+    horizonOnly.enableFrustum = false;
+    horizonOnly.enableHorizon = true;
+    require(classifyChunkBound(minusZ, horizonOnly)==ChunkCullReason::BehindHorizon,
+            "far-face chunk bound was not BehindHorizon with frustum disabled");
+    require(classifyChunkBound(plusZ, horizonOnly)==ChunkCullReason::Visible,
+            "near-face chunk bound was horizon-culled");
+
+    // Conservative: BehindHorizon ⇒ every UVR prism corner is actually hidden.
+    require(boundFullyBehindHorizon(minusZ, eye, horizonOnly.occluderRadius),
+            "BehindHorizon classification drifted from the prism-corner oracle");
+
+    PlanetSurface planet(0x0B17A1ULL, PlanetClass::Temperate);
+    JobSystem jobs(SerialJobs);
+    FakeGraphicsBackend fake;
+    PlanetSurfaceRenderer renderer(jobs, fake);
+    renderer.sync(planet);
+    for (int i=0;i<64 && (renderer.pendingJobs()>0 || renderer.dirtyChunks()>0);++i)
+        renderer.sync(planet);
+    require(renderer.pendingJobs()==0, "cull fixture serial jobs still pending after drain");
+    require(renderer.dirtyChunks()==0, "cull fixture remained dirty after serial drain");
+    require(renderer.ready(), "cull fixture renderer failed to settle");
+
+    const int uploadsBefore = fake.uploads;
+    const std::size_t liveBefore = fake.liveCount();
+    renderer.draw();
+    require(fake.draws==PlanetSurface::ChunkCount &&
+            renderer.lastDrawnChunks()==PlanetSurface::ChunkCount,
+            "draw without a view must still submit every published chunk");
+
+    const SurfaceCellAddress feetCell{CubeFace::PositiveZ,32,32,
+        planet.surfaceRadial(CubeFace::PositiveZ,32,32)};
+    const Vec3 feet = planet.cellCenterPosition(feetCell);
+    const Vec3 up = normalize(feet);
+    const Vec3 eyePos = feet + up * 1.62f;
+    const auto frame = planet.surfaceFrame(feet);
+    const int localSlot = testPlanetSlot(CubeFace::PositiveZ, 1, 1);
+    const int farSlot = testPlanetSlot(CubeFace::NegativeZ, 0, 0);
+
+    // Wide look-through-planet view: local chunk stays visible, far face is
+    // inside the frustum but geometrically behind the horizon.
+    auto through = makePlanetSurfaceView(eyePos, up*-1.0f, frame.forward, 170.0f, 1.0f,
+                                         planet.referenceRadius());
+    renderer.setView(through);
+    require(renderer.chunkCullReason(localSlot)==ChunkCullReason::Visible,
+            "camera-chunk was culled while looking down at the local surface");
+    require(renderer.chunkCullReason(farSlot)==ChunkCullReason::BehindHorizon,
+            "antipodal chunk was not horizon-culled when inside a wide frustum");
+
+    int vis=0, fru=0, hor=0;
+    std::array<ChunkCullReason, PlanetSurface::ChunkCount> reasons{};
+    for (int slot=0; slot<PlanetSurface::ChunkCount; ++slot) {
+        reasons[static_cast<std::size_t>(slot)] = renderer.chunkCullReason(slot);
+        if (reasons[static_cast<std::size_t>(slot)]==ChunkCullReason::Visible) ++vis;
+        else if (reasons[static_cast<std::size_t>(slot)]==ChunkCullReason::OutsideFrustum) ++fru;
+        else ++hor;
+    }
+    require(vis>=1 && hor>=1 && vis+fru+hor==PlanetSurface::ChunkCount,
+            "look-through view did not produce both visible and horizon-culled chunks");
+
+    const int drawsBefore = fake.draws;
+    renderer.draw();
+    require(renderer.lastDrawnChunks()==vis,
+            "draw-list size drifted from the classified visible set");
+    require(renderer.lastCulledHorizon()==hor,
+            "horizon cull count drifted from the classified set");
+    require(fake.draws==drawsBefore+vis,
+            "drawMesh was invoked for a culled chunk");
+    require(fake.liveCount()==liveBefore && fake.uploads==uploadsBefore,
+            "culling destroyed or rebuilt retained GPU meshes");
+
+    // Frustum-only: narrow look along +X hides most of the sphere, including
+    // the back face which the wide-horizon pass had kept classified.
+    auto narrow = makePlanetSurfaceView(eyePos, frame.right, up, 18.0f, 1.0f,
+                                        planet.referenceRadius());
+    narrow.enableHorizon = false;
+    renderer.setView(narrow);
+    require(renderer.chunkCullReason(farSlot)==ChunkCullReason::OutsideFrustum,
+            "narrow +X frustum did not reject the antipodal chunk");
+    int nVis=0, nFru=0;
+    for (int slot=0; slot<PlanetSurface::ChunkCount; ++slot) {
+        const auto r = renderer.chunkCullReason(slot);
+        if (r==ChunkCullReason::Visible) ++nVis;
+        else if (r==ChunkCullReason::OutsideFrustum) ++nFru;
+    }
+    require(nVis>=1 && nFru>=1 && nVis+nFru==PlanetSurface::ChunkCount,
+            "frustum-only pass did not split the 24-chunk set into visible vs culled");
+    renderer.draw();
+    require(renderer.lastDrawnChunks()==nVis && renderer.lastCulledFrustum()==nFru,
+            "frustum draw counts drifted from the classified visible/culled sets");
+
+    renderer.clearView();
+    const int afterClear = fake.draws;
+    renderer.draw();
+    require(fake.draws==afterClear+PlanetSurface::ChunkCount,
+            "clearView did not restore draw-all");
+
+    // Streaming / hysteresis must be independent of the draw cull.
+    renderer.setStreamingFocus(feet, 6, 9);
+    renderer.sync(planet);
+    for (int i=0;i<64 && (renderer.pendingJobs()>0 || renderer.dirtyChunks()>0);++i)
+        renderer.sync(planet);
+    require(renderer.pendingJobs()==0, "cull fixture streaming jobs still pending after serial drain");
+    require(renderer.dirtyChunks()==0, "cull fixture streaming remained dirty after serial drain");
+    require(renderer.fullDetailChunks()==6 && renderer.nearFieldChunks()==9,
+            "view culling changed streaming LOD residency");
+    renderer.setView(through);
+    renderer.draw();
+    require(renderer.fullDetailChunks()==6,
+            "drawing a culled frame demoted LOD0 residency");
+    require(renderer.cpuCacheStats().resident>=6 && renderer.cpuCacheStats().resident<=10,
+            "drawing a culled frame changed CPU LOD0 residency");
 }
 
 void settleRenderer(WorldRenderer& renderer, const World& world) {
@@ -4063,6 +4247,7 @@ int main() {
         testPlanetSurfaceMeshingAndRenderer();
         testLodHysteresisDoesNotFlipFlopInBand();
         testStreamingLodHysteresisNoFlipFlop();
+        testChunkFrustumAndHorizonCull();
         testChunkDirtyTrackingAndRendererIsolation();
         testAoAndMaterialRanges();
         testBasePowerAndSealedAtmosphere();
